@@ -14,7 +14,7 @@ mod format;
 #[command(
     name = "gdrive",
     author = "connaners",
-    version = "0.1.0",
+    version,
     about = "Google Drive CLI & MCP Server"
 )]
 struct Cli {
