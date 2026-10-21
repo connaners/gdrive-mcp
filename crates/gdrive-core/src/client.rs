@@ -3,11 +3,21 @@ use crate::models::{
     CreateFileOptions, DriveFile, DriveFileList, SearchFileOptions, UpdateFileOptions,
 };
 use anyhow::{bail, Context, Result};
+use bytes::Bytes;
+use futures_util::Stream;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
+
+/// Representasi stream download file beserta metadata
+pub struct DownloadStream {
+    pub name: String,
+    pub size: Option<u64>,
+    pub mime_type: String,
+    pub stream: Box<dyn Stream<Item = reqwest::Result<Bytes>> + Unpin + Send>,
+}
 
 #[derive(Clone)]
 pub struct GDriveClient {
@@ -774,6 +784,88 @@ impl GDriveClient {
         }
 
         Ok((meta.name, resp.bytes().await?.to_vec()))
+    }
+
+    /// Mengambil file sebagai stream byte untuk penghematan memori dan rendering progress bar
+    pub async fn download_file_stream(&self, raw_id: &str) -> Result<DownloadStream> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_resp = self
+            .send_with_retry(|t| {
+                self.http.get(&meta_url).bearer_auth(t).query(&[
+                    ("fields", "id, name, mimeType, size"),
+                    ("supportsAllDrives", "true"),
+                ])
+            })
+            .await
+            .context("Gagal mengambil metadata file untuk download")?;
+
+        if !meta_resp.status().is_success() {
+            let err = meta_resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil metadata file: {}", err);
+        }
+
+        let meta: DriveFile = meta_resp.json().await?;
+        let parsed_size = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok());
+
+        // Jika Google Docs, ekspor ke teks
+        if meta.mime_type == "application/vnd.google-apps.document" {
+            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let resp = self
+                .send_with_retry(|t| {
+                    self.http
+                        .get(&export_url)
+                        .bearer_auth(t)
+                        .query(&[("mimeType", "text/plain")])
+                })
+                .await?;
+            let filename = format!("{}.txt", meta.name);
+            let len = resp.content_length();
+            return Ok(DownloadStream {
+                name: filename,
+                size: len,
+                mime_type: "text/plain".to_string(),
+                stream: Box::new(resp.bytes_stream()),
+            });
+        }
+
+        // Regular file media download
+        let download_url = format!(
+            "{}/files/{}?alt=media&supportsAllDrives=true",
+            DRIVE_API_BASE, file_id
+        );
+        let resp = self
+            .send_with_retry(|t| self.http.get(&download_url).bearer_auth(t))
+            .await?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengunduh file media: {}", err);
+        }
+
+        let total_size = parsed_size.or_else(|| resp.content_length());
+
+        Ok(DownloadStream {
+            name: meta.name,
+            size: total_size,
+            mime_type: meta.mime_type,
+            stream: Box::new(resp.bytes_stream()),
+        })
+    }
+
+    /// Mencari file berdasarkan nama (exact match atau contains)
+    pub async fn find_files_by_name(&self, name_query: &str, limit: u32) -> Result<Vec<DriveFile>> {
+        let res = self
+            .search_files_with_options(SearchFileOptions {
+                query: Some(name_query.to_string()),
+                folder_id: None,
+                page_size: Some(limit),
+                page_token: None,
+                full_text: false,
+                order_by: Some("folder,name,modifiedTime desc".to_string()),
+            })
+            .await?;
+        Ok(res.files)
     }
 
     /// Mengupload file lokal dari disk ke Google Drive
