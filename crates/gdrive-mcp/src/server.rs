@@ -350,21 +350,43 @@ impl GDriveMcpServer {
                 .join(&orig_name),
         };
 
-        let mut file = std::fs::File::create(&out_path).map_err(|e| {
-            ErrorData::internal_error(format!("Gagal membuat file lokal: {}", e), None)
+        let part_path = {
+            let mut os_str = out_path.as_os_str().to_os_string();
+            os_str.push(".gdrive_part");
+            std::path::PathBuf::from(os_str)
+        };
+
+        let mut file = std::fs::File::create(&part_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat file sementara: {}", e), None)
         })?;
 
         let mut stream = stream_data.stream;
         let mut downloaded_bytes: u64 = 0;
 
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res.map_err(|e| {
-                ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
+        let download_result: std::result::Result<(), ErrorData> = async {
+            while let Some(chunk_res) = stream.next().await {
+                let chunk = chunk_res.map_err(|e| {
+                    ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
+                })?;
+                file.write_all(&chunk).map_err(|e| {
+                    ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
+                })?;
+                downloaded_bytes += chunk.len() as u64;
+            }
+            file.flush().map_err(|e| {
+                ErrorData::internal_error(format!("Gagal flush file sementara: {}", e), None)
             })?;
-            file.write_all(&chunk).map_err(|e| {
-                ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
+            drop(file);
+            std::fs::rename(&part_path, &out_path).map_err(|e| {
+                ErrorData::internal_error(format!("Gagal memindahkan file ke tujuan: {}", e), None)
             })?;
-            downloaded_bytes += chunk.len() as u64;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = download_result {
+            let _ = std::fs::remove_file(&part_path);
+            return Err(e);
         }
 
         let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);

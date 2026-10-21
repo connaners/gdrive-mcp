@@ -428,7 +428,12 @@ async fn handle_search(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&res.files)?);
+        let output = serde_json::json!({
+            "files": res.files,
+            "next_page_token": res.next_page_token,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
     } else if plain {
         for f in &res.files {
             println!("{} | {} | {}", f.id, f.name, f.mime_type);
@@ -572,7 +577,10 @@ async fn resolve_download_target(client: &GDriveClient, target: &str) -> Result<
         eprint!("\n👉 Masukkan nomor pilihan [1-{}]: ", candidates.len());
         std::io::stderr().flush()?;
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
+        let bytes_read = std::io::stdin().read_line(&mut input)?;
+        if bytes_read == 0 {
+            bail!("Input ditutup (EOF) sebelum pilihan file ditentukan.");
+        }
         if let Ok(choice) = input.trim().parse::<usize>() {
             if (1..=candidates.len()).contains(&choice) {
                 let chosen = &candidates[choice - 1];
@@ -621,16 +629,39 @@ async fn handle_download(target: String, output: Option<PathBuf>) -> Result<()> 
         }
     };
 
-    let mut file = std::fs::File::create(&out_path)
-        .with_context(|| format!("Gagal membuat file lokal di {:?}", out_path))?;
+    let part_path = {
+        let mut os_str = out_path.as_os_str().to_os_string();
+        os_str.push(".gdrive_part");
+        PathBuf::from(os_str)
+    };
+
+    let mut file = std::fs::File::create(&part_path)
+        .with_context(|| format!("Gagal membuat file sementara di {:?}", part_path))?;
     let mut stream = download_stream.stream;
     let mut downloaded_bytes: u64 = 0;
 
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res.context("Koneksi terputus saat streaming download file")?;
-        file.write_all(&chunk)?;
-        downloaded_bytes += chunk.len() as u64;
-        pb.inc(chunk.len() as u64);
+    let download_result: Result<()> = async {
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res.context("Koneksi terputus saat streaming download file")?;
+            file.write_all(&chunk)?;
+            downloaded_bytes += chunk.len() as u64;
+            pb.inc(chunk.len() as u64);
+        }
+        file.flush()?;
+        drop(file);
+        std::fs::rename(&part_path, &out_path).with_context(|| {
+            format!(
+                "Gagal memindahkan file dari {:?} ke {:?}",
+                part_path, out_path
+            )
+        })?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = download_result {
+        let _ = std::fs::remove_file(&part_path);
+        return Err(e);
     }
 
     pb.finish_and_clear();

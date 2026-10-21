@@ -855,9 +855,12 @@ impl GDriveClient {
 
     /// Mencari file berdasarkan nama (exact match atau contains)
     pub async fn find_files_by_name(&self, name_query: &str, limit: u32) -> Result<Vec<DriveFile>> {
+        let escaped = name_query.trim().replace('\\', "\\\\").replace('\'', "\\'");
+        let query_predicate = format!("name contains '{escaped}'");
+
         let res = self
             .search_files_with_options(SearchFileOptions {
-                query: Some(name_query.to_string()),
+                query: Some(query_predicate),
                 folder_id: None,
                 page_size: Some(limit),
                 page_token: None,
@@ -1025,6 +1028,22 @@ mod tests {
         assert_eq!(
             q,
             "trashed = false and mimeType = 'application/pdf' and name contains 'RFC'"
+        );
+    }
+
+    #[test]
+    fn test_build_search_query_name_predicate_with_and_operator() {
+        let name_query = "Romeo and Juliet's notes.txt";
+        let escaped = name_query.trim().replace('\\', "\\\\").replace('\'', "\\'");
+        let query_predicate = format!("name contains '{escaped}'");
+        let opts = SearchFileOptions {
+            query: Some(query_predicate),
+            ..Default::default()
+        };
+        let q = GDriveClient::build_search_query(&opts);
+        assert_eq!(
+            q,
+            "trashed = false and name contains 'Romeo and Juliet\\'s notes.txt'"
         );
     }
 
