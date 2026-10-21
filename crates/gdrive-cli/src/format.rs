@@ -95,6 +95,19 @@ pub fn render_files_table(files: &[DriveFile]) -> String {
     table.to_string()
 }
 
+/// Membersihkan nama file download dari path traversal, separator direktori, dan karakter berbahaya
+pub fn sanitize_download_filename(raw_name: &str) -> String {
+    let clean = raw_name.replace('\\', "/");
+    let basename = std::path::Path::new(&clean)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_start_matches('.'))
+        .filter(|n| !n.is_empty())
+        .unwrap_or("downloaded_file");
+
+    basename.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +134,18 @@ mod tests {
             "2026-10-22 01:38"
         );
         assert_eq!(format_date(None), "-");
+    }
+
+    #[test]
+    fn test_sanitize_download_filename() {
+        assert_eq!(sanitize_download_filename("normal.pdf"), "normal.pdf");
+        assert_eq!(sanitize_download_filename("../../etc/passwd"), "passwd");
+        assert_eq!(
+            sanitize_download_filename("..\\..\\windows\\system32\\calc.exe"),
+            "calc.exe"
+        );
+        assert_eq!(sanitize_download_filename(".hidden"), "hidden");
+        assert_eq!(sanitize_download_filename("..."), "downloaded_file");
+        assert_eq!(sanitize_download_filename(""), "downloaded_file");
     }
 }

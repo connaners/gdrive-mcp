@@ -538,7 +538,9 @@ async fn resolve_download_target(client: &GDriveClient, target: &str) -> Result<
     let looks_like_id = cleaned.len() >= 25 && !cleaned.contains(' ') && !cleaned.contains('.');
 
     if looks_like_id {
-        return Ok((cleaned.to_string(), String::new()));
+        if let Ok(meta) = client.get_file_metadata(cleaned).await {
+            return Ok((meta.id, meta.name));
+        }
     }
 
     // Cari berdasarkan nama file
@@ -599,16 +601,27 @@ async fn handle_download(target: String, output: Option<PathBuf>) -> Result<()> 
     let orig_name = download_stream.name;
     let total_size = download_stream.size;
 
+    let sanitized_name = format::sanitize_download_filename(&orig_name);
+
     let out_path = match output {
         Some(p) => {
             if p.is_dir() {
-                p.join(&orig_name)
+                p.join(&sanitized_name)
             } else {
                 p
             }
         }
-        None => std::env::current_dir()?.join(&orig_name),
+        None => std::env::current_dir()?.join(&sanitized_name),
     };
+
+    if let Ok(meta) = std::fs::symlink_metadata(&out_path) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "Tujuan download {:?} adalah symbolic link yang tidak diizinkan.",
+                out_path
+            );
+        }
+    }
 
     let pb = match total_size {
         Some(len) => {

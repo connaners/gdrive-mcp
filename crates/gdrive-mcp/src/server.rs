@@ -310,7 +310,24 @@ impl GDriveMcpServer {
 
         // Resolusi target ke File ID
         let file_id = if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
-            target.to_string()
+            if let Ok(meta) = client.get_file_metadata(target).await {
+                meta.id
+            } else {
+                let files = client
+                    .find_files_by_name(target, 5)
+                    .await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                if files.is_empty() {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "File dengan ID atau nama '{}' tidak ditemukan di Google Drive.",
+                            target
+                        ),
+                        None,
+                    ));
+                }
+                files[0].id.clone()
+            }
         } else {
             let files = client
                 .find_files_by_name(target, 5)
@@ -336,19 +353,39 @@ impl GDriveMcpServer {
         let orig_name = stream_data.name.clone();
         let mime_type = stream_data.mime_type.clone();
 
+        let clean_name = orig_name.replace('\\', "/");
+        let sanitized_name = std::path::Path::new(&clean_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.trim_start_matches('.'))
+            .filter(|n| !n.is_empty())
+            .unwrap_or("downloaded_file");
+
         let out_path = match args.destination_path {
             Some(p) => {
                 let pb = std::path::PathBuf::from(p);
                 if pb.is_dir() {
-                    pb.join(&orig_name)
+                    pb.join(sanitized_name)
                 } else {
                     pb
                 }
             }
             None => std::env::current_dir()
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                .join(&orig_name),
+                .join(sanitized_name),
         };
+
+        if let Ok(meta) = std::fs::symlink_metadata(&out_path) {
+            if meta.file_type().is_symlink() {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "Tujuan download {:?} adalah symbolic link yang tidak diizinkan.",
+                        out_path
+                    ),
+                    None,
+                ));
+            }
+        }
 
         let part_path = {
             let mut os_str = out_path.as_os_str().to_os_string();

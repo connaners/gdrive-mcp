@@ -88,6 +88,7 @@ impl GDriveClient {
     {
         const MAX_RETRIES: u32 = 3;
         let mut attempt = 0;
+        let mut refreshed = false;
         let mut backoff = std::time::Duration::from_millis(500);
 
         loop {
@@ -96,10 +97,14 @@ impl GDriveClient {
 
             match resp_result {
                 Ok(resp) => {
-                    // Cek jika 401 Unauthorized
-                    if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
-                        if let Ok(new_token) = self.force_refresh().await {
-                            return Ok(build(&new_token).send().await?);
+                    // Cek jika 401 Unauthorized (refresh token sekali dan lanjutkan retry loop)
+                    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                        && self.auto_refresh
+                        && !refreshed
+                    {
+                        refreshed = true;
+                        if self.force_refresh().await.is_ok() {
+                            continue;
                         }
                     }
 
@@ -732,6 +737,29 @@ impl GDriveClient {
         Ok(drive_list.drives)
     }
 
+    /// Mengambil metadata file berdasarkan ID jika ada
+    pub async fn get_file_metadata(&self, raw_id: &str) -> Result<DriveFile> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_resp = self
+            .send_with_retry(|t| {
+                self.http.get(&meta_url).bearer_auth(t).query(&[
+                    ("fields", "id, name, mimeType, size"),
+                    ("supportsAllDrives", "true"),
+                ])
+            })
+            .await
+            .context("Gagal mengambil metadata file")?;
+
+        if !meta_resp.status().is_success() {
+            let err = meta_resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil metadata file: {}", err);
+        }
+
+        let meta: DriveFile = meta_resp.json().await?;
+        Ok(meta)
+    }
+
     /// Mengunduh raw bytes file dari Google Drive beserta metadata nama file aslinya
     pub async fn download_file_bytes(&self, raw_id: &str) -> Result<(String, Vec<u8>)> {
         let file_id = Self::clean_file_id(raw_id);
@@ -808,23 +836,44 @@ impl GDriveClient {
         let meta: DriveFile = meta_resp.json().await?;
         let parsed_size = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok());
 
-        // Jika Google Docs, ekspor ke teks
-        if meta.mime_type == "application/vnd.google-apps.document" {
+        // Auto-Export Google Workspace (Docs, Sheets, Slides, Drawings)
+        let workspace_export: Option<(&'static str, &'static str, &'static str)> =
+            match meta.mime_type.as_str() {
+                "application/vnd.google-apps.document" => Some(("text/plain", "txt", "text/plain")),
+                "application/vnd.google-apps.spreadsheet" => Some(("text/csv", "csv", "text/csv")),
+                "application/vnd.google-apps.presentation" => {
+                    Some(("application/pdf", "pdf", "application/pdf"))
+                }
+                "application/vnd.google-apps.drawing" => Some(("image/png", "png", "image/png")),
+                _ => None,
+            };
+
+        if let Some((export_mime, ext, out_mime)) = workspace_export {
             let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
                         .get(&export_url)
                         .bearer_auth(t)
-                        .query(&[("mimeType", "text/plain")])
+                        .query(&[("mimeType", export_mime)])
                 })
                 .await?;
-            let filename = format!("{}.txt", meta.name);
+
+            if !resp.status().is_success() {
+                let err = resp.text().await.unwrap_or_default();
+                bail!(
+                    "Gagal mengekspor file Google Workspace ({}): {}",
+                    meta.mime_type,
+                    err
+                );
+            }
+
+            let filename = format!("{}.{}", meta.name, ext);
             let len = resp.content_length();
             return Ok(DownloadStream {
                 name: filename,
                 size: len,
-                mime_type: "text/plain".to_string(),
+                mime_type: out_mime.to_string(),
                 stream: Box::new(resp.bytes_stream()),
             });
         }
