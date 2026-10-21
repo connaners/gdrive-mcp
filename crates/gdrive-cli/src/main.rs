@@ -5,6 +5,8 @@ use clap::{Parser, Subcommand};
 use gdrive_core::{AuthManager, CreateFileOptions, GDriveClient, UpdateFileOptions};
 use tracing_subscriber::EnvFilter;
 
+mod format;
+
 #[derive(Parser)]
 #[command(
     name = "gdrive",
