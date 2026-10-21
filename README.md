@@ -35,21 +35,34 @@ gdrive-mcp/
 
 ---
 
-## 🚀 Installation & Building
+## 🚀 Installation
 
-### From Source
+### 1. One-Line Installer (Recommended — Tanpa Git Clone & Tanpa Rust)
 
-Ensure you have Rust (1.75+) installed:
+Otomatis mendeteksi sistem operasi, mengunduh prebuilt binary resmi dari GitHub Releases, dan memasangnya ke `~/.local/bin/gdrive`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/connaners/gdrive-mcp/main/install.sh | bash
+```
+
+### 2. Via Cargo (Tanpa Git Clone Manual)
+
+Jika Anda sudah memiliki Rust/Cargo terpasang di komputer:
+
+```bash
+cargo install --git https://github.com/connaners/gdrive-mcp.git gdrive-cli
+```
+
+### 3. Unduh Prebuilt Binary Manual
+
+Unduh arsip binary langsung dari halaman [GitHub Releases](https://github.com/connaners/gdrive-mcp/releases/latest), ekstrak, dan pindahkan `gdrive` ke `$PATH` Anda.
+
+### 4. Build dari Source (Untuk Developer & Kontributor)
 
 ```bash
 git clone https://github.com/connaners/gdrive-mcp.git
 cd gdrive-mcp
 cargo build --release
-```
-
-The compiled binary will be placed at `target/release/gdrive`. You can symlink or move it to your `$PATH`:
-
-```bash
 sudo cp target/release/gdrive /usr/local/bin/
 ```
 
