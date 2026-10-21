@@ -18,7 +18,10 @@ gdrive-mcp = { path = "crates/gdrive-mcp", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+comfy-table = "7"
 dirs = "6"
+futures-util = "0.3"
+indicatif = "0.17"
 open = "5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 rmcp = { version = "2.1", features = ["macros", "schemars", "server", "transport-io"] }
