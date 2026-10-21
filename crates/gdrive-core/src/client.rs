@@ -1031,9 +1031,13 @@ mod tests {
     #[test]
     fn test_is_transient_status() {
         assert!(is_transient_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_transient_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_transient_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(is_transient_status(reqwest::StatusCode::BAD_GATEWAY));
-        assert!(is_transient_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_transient_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
         assert!(is_transient_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
         assert!(!is_transient_status(reqwest::StatusCode::NOT_FOUND));
         assert!(!is_transient_status(reqwest::StatusCode::FORBIDDEN));

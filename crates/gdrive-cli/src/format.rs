@@ -60,11 +60,21 @@ pub fn render_files_table(files: &[DriveFile]) -> String {
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            Cell::new("ID").add_attribute(Attribute::Bold).fg(Color::Cyan),
-            Cell::new("Tipe").add_attribute(Attribute::Bold).fg(Color::Yellow),
-            Cell::new("Nama").add_attribute(Attribute::Bold).fg(Color::Green),
-            Cell::new("Ukuran").add_attribute(Attribute::Bold).fg(Color::Magenta),
-            Cell::new("Terakhir Diubah").add_attribute(Attribute::Bold).fg(Color::Blue),
+            Cell::new("ID")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new("Tipe")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Yellow),
+            Cell::new("Nama")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Green),
+            Cell::new("Ukuran")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Magenta),
+            Cell::new("Terakhir Diubah")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Blue),
         ]);
 
     for f in files {
@@ -106,7 +116,10 @@ mod tests {
 
     #[test]
     fn test_format_date() {
-        assert_eq!(format_date(Some("2026-10-22T01:38:55.000Z")), "2026-10-22 01:38");
+        assert_eq!(
+            format_date(Some("2026-10-22T01:38:55.000Z")),
+            "2026-10-22 01:38"
+        );
         assert_eq!(format_date(None), "-");
     }
 }

@@ -14,6 +14,7 @@ gdrive-mcp.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 comfy-table.workspace = true
+futures-util.workspace = true
 indicatif.workspace = true
 open.workspace = true
 serde_json.workspace = true
