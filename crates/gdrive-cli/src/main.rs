@@ -1,8 +1,11 @@
+use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use futures_util::StreamExt;
 use gdrive_core::{AuthManager, CreateFileOptions, GDriveClient, UpdateFileOptions};
+use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 
 mod format;
@@ -111,11 +114,11 @@ enum Commands {
         #[arg(long)]
         docs: bool,
     },
-    /// Download file dari Google Drive ke disk lokal
+    /// Download file dari Google Drive ke disk lokal (berdasarkan ID, URL, atau nama file)
     Download {
-        /// ID file yang ingin diunduh
-        file_id: String,
-        /// Path file output tujuan (default: nama file asli dari Drive)
+        /// ID file, URL Google Drive, atau nama file yang ingin diunduh
+        target: String,
+        /// Path file atau folder output tujuan (default: nama file asli dari Drive di folder saat ini)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -188,7 +191,12 @@ async fn main() -> Result<()> {
             page_token,
             json,
             plain,
-        } => handle_search(query, folder, limit, full_text, order_by, page_token, json, plain).await,
+        } => {
+            handle_search(
+                query, folder, limit, full_text, order_by, page_token, json, plain,
+            )
+            .await
+        }
         Commands::Rename { file_id, new_name } => handle_rename(file_id, new_name).await,
         Commands::Move {
             file_id,
@@ -213,7 +221,7 @@ async fn main() -> Result<()> {
             parent,
             docs,
         } => handle_upload(path, name, parent, docs).await,
-        Commands::Download { file_id, output } => handle_download(file_id, output).await,
+        Commands::Download { target, output } => handle_download(target, output).await,
         Commands::Mkdir { name, parent } => handle_mkdir(name, parent).await,
         Commands::Trash { file_id } => handle_trash(file_id).await,
         Commands::Drives { limit } => handle_drives(limit).await,
@@ -396,6 +404,7 @@ async fn handle_setup() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_search(
     query: Option<String>,
     folder: Option<String>,
@@ -519,20 +528,119 @@ async fn handle_upload(
     Ok(())
 }
 
-async fn handle_download(file_id: String, output: Option<PathBuf>) -> Result<()> {
-    let client = GDriveClient::from_saved_token().await?;
-    eprintln!("Mengunduh file ID: {}...", file_id);
-    let (orig_name, bytes) = client.download_file_bytes(&file_id).await?;
+async fn resolve_download_target(client: &GDriveClient, target: &str) -> Result<(String, String)> {
+    let cleaned = GDriveClient::clean_file_id(target);
+    let looks_like_id = cleaned.len() >= 25 && !cleaned.contains(' ') && !cleaned.contains('.');
 
-    let out_path = output.unwrap_or_else(|| PathBuf::from(&orig_name));
-    std::fs::write(&out_path, &bytes)?;
-    eprintln!(
-        "Berhasil mengunduh {} ({} bytes) ke {:?}",
-        orig_name,
-        bytes.len(),
-        out_path
-    );
-    println!("{}", out_path.display());
+    if looks_like_id {
+        return Ok((cleaned.to_string(), String::new()));
+    }
+
+    // Cari berdasarkan nama file
+    eprintln!("🔍 Mencari file dengan nama: \"{}\"...", target);
+    let candidates = client.find_files_by_name(target, 10).await?;
+
+    if candidates.is_empty() {
+        bail!(
+            "Tidak ditemukan file dengan nama \"{}\".\nTips: Gunakan 'gdrive search \"{}\"' untuk mencari lebih lanjut.",
+            target, target
+        );
+    }
+
+    if candidates.len() == 1 {
+        let f = &candidates[0];
+        eprintln!("🎯 Ditemukan: {} (ID: {})", f.name, f.id);
+        return Ok((f.id.clone(), f.name.clone()));
+    }
+
+    // Tampilkan pilihan interaktif
+    eprintln!("\n⚠️  Ditemukan beberapa file yang cocok. Silakan pilih nomor file:");
+    for (idx, f) in candidates.iter().enumerate() {
+        let (icon, _label) = format::format_mime(&f.mime_type);
+        let size = format::format_size(f.size.as_deref());
+        eprintln!(
+            "  [{}] {} {} ({}) - ID: {}",
+            idx + 1,
+            icon,
+            f.name,
+            size,
+            f.id
+        );
+    }
+
+    loop {
+        eprint!("\n👉 Masukkan nomor pilihan [1-{}]: ", candidates.len());
+        std::io::stderr().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if let Ok(choice) = input.trim().parse::<usize>() {
+            if (1..=candidates.len()).contains(&choice) {
+                let chosen = &candidates[choice - 1];
+                return Ok((chosen.id.clone(), chosen.name.clone()));
+            }
+        }
+        eprintln!("Nomor tidak valid, silakan coba lagi.");
+    }
+}
+
+async fn handle_download(target: String, output: Option<PathBuf>) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    let (file_id, _) = resolve_download_target(&client, &target).await?;
+
+    let download_stream = client.download_file_stream(&file_id).await?;
+    let orig_name = download_stream.name;
+    let total_size = download_stream.size;
+
+    let out_path = match output {
+        Some(p) => {
+            if p.is_dir() {
+                p.join(&orig_name)
+            } else {
+                p
+            }
+        }
+        None => std::env::current_dir()?.join(&orig_name),
+    };
+
+    let pb = match total_size {
+        Some(len) => {
+            let p = ProgressBar::new(len);
+            p.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
+                    .progress_chars("#>-"),
+            );
+            p
+        }
+        None => {
+            let p = ProgressBar::new_spinner();
+            p.set_style(
+                ProgressStyle::default_spinner().template("{spinner:.green} {bytes} downloaded")?,
+            );
+            p
+        }
+    };
+
+    let mut file = std::fs::File::create(&out_path)
+        .with_context(|| format!("Gagal membuat file lokal di {:?}", out_path))?;
+    let mut stream = download_stream.stream;
+    let mut downloaded_bytes: u64 = 0;
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.context("Koneksi terputus saat streaming download file")?;
+        file.write_all(&chunk)?;
+        downloaded_bytes += chunk.len() as u64;
+        pb.inc(chunk.len() as u64);
+    }
+
+    pb.finish_and_clear();
+
+    let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
+    let size_display = format::format_size(Some(&downloaded_bytes.to_string()));
+
+    eprintln!("✅ Berhasil mengunduh \"{}\" ({})", orig_name, size_display);
+    eprintln!("📁 Lokasi file: {}", abs_path.display());
+    println!("{}", abs_path.display());
     Ok(())
 }
 
