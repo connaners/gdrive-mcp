@@ -16,6 +16,10 @@ pub struct GDriveClient {
     auto_refresh: bool,
 }
 
+pub fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
 impl GDriveClient {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -65,22 +69,66 @@ impl GDriveClient {
         }
     }
 
-    /// Mengirim request dengan mekanisme retry otomatis satu kali jika terkena HTTP 401 Unauthorized
+    /// Mengirim request dengan mekanisme retry otomatis:
+    /// 1. HTTP 401 Unauthorized -> Refresh token dan coba kembali
+    /// 2. Transient status (HTTP 429, 500, 502, 503, 504) atau network failure -> Exponential backoff hingga 3x
     pub async fn send_with_retry<F>(&self, build: F) -> Result<reqwest::Response>
     where
         F: Fn(&str) -> reqwest::RequestBuilder,
     {
-        let token = self.get_token().await;
-        let resp = build(&token).send().await?;
+        const MAX_RETRIES: u32 = 3;
+        let mut attempt = 0;
+        let mut backoff = std::time::Duration::from_millis(500);
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
-            if let Ok(new_token) = self.force_refresh().await {
-                let retry_resp = build(&new_token).send().await?;
-                return Ok(retry_resp);
+        loop {
+            let token = self.get_token().await;
+            let resp_result = build(&token).send().await;
+
+            match resp_result {
+                Ok(resp) => {
+                    // Cek jika 401 Unauthorized
+                    if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
+                        if let Ok(new_token) = self.force_refresh().await {
+                            return Ok(build(&new_token).send().await?);
+                        }
+                    }
+
+                    // Cek transient status (429, 5xx)
+                    if is_transient_status(resp.status()) && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        tracing::warn!(
+                            "Menerima status {} dari Google Drive API. Mencoba ulang ({}/{})...",
+                            resp.status(),
+                            attempt,
+                            MAX_RETRIES
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                        continue;
+                    }
+
+                    return Ok(resp);
+                }
+                Err(err) => {
+                    // Network IO / timeout errors
+                    if (err.is_connect() || err.is_timeout() || err.is_request())
+                        && attempt < MAX_RETRIES
+                    {
+                        attempt += 1;
+                        tracing::warn!(
+                            "Gagal koneksi ke Google Drive API: {}. Mencoba ulang ({}/{})...",
+                            err,
+                            attempt,
+                            MAX_RETRIES
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                        continue;
+                    }
+                    return Err(err.into());
+                }
             }
         }
-
-        Ok(resp)
     }
 
     /// Membangun query string pencarian Google Drive yang aman dan resilient
@@ -886,5 +934,16 @@ mod tests {
             q,
             "trashed = false and mimeType = 'application/pdf' and name contains 'RFC'"
         );
+    }
+
+    #[test]
+    fn test_is_transient_status() {
+        assert!(is_transient_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_transient_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_transient_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_transient_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_transient_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(!is_transient_status(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_transient_status(reqwest::StatusCode::FORBIDDEN));
     }
 }
