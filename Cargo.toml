@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/gdrive-core",
+    "crates/gdrive-mcp",
+    "crates/gdrive-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["connaners"]
+
+[workspace.dependencies]
+gdrive-core = { path = "crates/gdrive-core", version = "0.1.0" }
+gdrive-mcp = { path = "crates/gdrive-mcp", version = "0.1.0" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+open = "5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+rmcp = { version = "2.1", features = ["macros", "schemars", "server", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
