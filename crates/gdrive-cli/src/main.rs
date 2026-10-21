@@ -593,6 +593,26 @@ async fn resolve_download_target(client: &GDriveClient, target: &str) -> Result<
     }
 }
 
+async fn write_chunks_to_part_file(
+    stream: &mut gdrive_core::DownloadByteStream,
+    part_path: &std::path::Path,
+    pb: &ProgressBar,
+) -> Result<u64> {
+    let mut file = std::fs::File::create(part_path)
+        .with_context(|| format!("Gagal membuat file sementara di {:?}", part_path))?;
+    let mut downloaded_bytes: u64 = 0;
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.context("Koneksi terputus saat streaming download file")?;
+        file.write_all(&chunk)?;
+        downloaded_bytes += chunk.len() as u64;
+        pb.inc(chunk.len() as u64);
+    }
+
+    file.flush()?;
+    Ok(downloaded_bytes)
+}
+
 async fn handle_download(target: String, output: Option<PathBuf>) -> Result<()> {
     let client = GDriveClient::from_saved_token().await?;
     let (file_id, _) = resolve_download_target(&client, &target).await?;
@@ -648,34 +668,46 @@ async fn handle_download(target: String, output: Option<PathBuf>) -> Result<()> 
         PathBuf::from(os_str)
     };
 
-    let mut file = std::fs::File::create(&part_path)
-        .with_context(|| format!("Gagal membuat file sementara di {:?}", part_path))?;
-    let mut stream = download_stream.stream;
     let mut downloaded_bytes: u64 = 0;
+    let mut current_stream = download_stream.stream;
+    let mut stream_err = None;
 
-    let download_result: Result<()> = async {
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res.context("Koneksi terputus saat streaming download file")?;
-            file.write_all(&chunk)?;
-            downloaded_bytes += chunk.len() as u64;
-            pb.inc(chunk.len() as u64);
+    for attempt in 1..=3 {
+        pb.set_position(0);
+        match write_chunks_to_part_file(&mut current_stream, &part_path, &pb).await {
+            Ok(bytes) => {
+                downloaded_bytes = bytes;
+                stream_err = None;
+                break;
+            }
+            Err(_e) if attempt < 3 => {
+                tracing::warn!("Streaming terputus, mengulang ({}/3)...", attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                match client.download_file_stream(&file_id).await {
+                    Ok(new_dl) => current_stream = new_dl.stream,
+                    Err(e) => {
+                        stream_err = Some(e);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                stream_err = Some(e);
+            }
         }
-        file.flush()?;
-        drop(file);
-        std::fs::rename(&part_path, &out_path).with_context(|| {
-            format!(
-                "Gagal memindahkan file dari {:?} ke {:?}",
-                part_path, out_path
-            )
-        })?;
-        Ok(())
     }
-    .await;
 
-    if let Err(e) = download_result {
+    if let Some(e) = stream_err {
         let _ = std::fs::remove_file(&part_path);
         return Err(e);
     }
+
+    std::fs::rename(&part_path, &out_path).with_context(|| {
+        format!(
+            "Gagal memindahkan file dari {:?} ke {:?}",
+            part_path, out_path
+        )
+    })?;
 
     pb.finish_and_clear();
 

@@ -28,6 +28,59 @@ pub struct ToolResponse {
     pub result: Value,
 }
 
+async fn write_chunks_to_part_file(
+    stream: &mut gdrive_core::DownloadByteStream,
+    part_path: &std::path::Path,
+) -> std::result::Result<u64, ErrorData> {
+    let mut file = std::fs::File::create(part_path).map_err(|e| {
+        ErrorData::internal_error(format!("Gagal membuat file sementara: {}", e), None)
+    })?;
+    let mut downloaded_bytes: u64 = 0;
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.map_err(|e| {
+            ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
+        })?;
+        file.write_all(&chunk).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
+        })?;
+        downloaded_bytes += chunk.len() as u64;
+    }
+
+    file.flush().map_err(|e| {
+        ErrorData::internal_error(format!("Gagal flush file sementara: {}", e), None)
+    })?;
+    Ok(downloaded_bytes)
+}
+
+async fn resolve_mcp_target(
+    client: &GDriveClient,
+    target: &str,
+) -> std::result::Result<String, ErrorData> {
+    if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
+        if let Ok(meta) = client.get_file_metadata(target).await {
+            return Ok(meta.id);
+        }
+    }
+
+    let files = client
+        .find_files_by_name(target, 5)
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    if files.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "File dengan ID atau nama '{}' tidak ditemukan di Google Drive.",
+                target
+            ),
+            None,
+        ));
+    }
+
+    Ok(files[0].id.clone())
+}
+
 #[derive(Clone)]
 pub struct GDriveMcpServer {
     tool_router: ToolRouter<Self>,
@@ -309,41 +362,7 @@ impl GDriveMcpServer {
         let target = args.file_id_or_name.trim();
 
         // Resolusi target ke File ID
-        let file_id = if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
-            if let Ok(meta) = client.get_file_metadata(target).await {
-                meta.id
-            } else {
-                let files = client
-                    .find_files_by_name(target, 5)
-                    .await
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                if files.is_empty() {
-                    return Err(ErrorData::invalid_params(
-                        format!(
-                            "File dengan ID atau nama '{}' tidak ditemukan di Google Drive.",
-                            target
-                        ),
-                        None,
-                    ));
-                }
-                files[0].id.clone()
-            }
-        } else {
-            let files = client
-                .find_files_by_name(target, 5)
-                .await
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            if files.is_empty() {
-                return Err(ErrorData::invalid_params(
-                    format!(
-                        "File dengan nama '{}' tidak ditemukan di Google Drive.",
-                        target
-                    ),
-                    None,
-                ));
-            }
-            files[0].id.clone()
-        };
+        let file_id = resolve_mcp_target(&client, target).await?;
 
         let stream_data = client
             .download_file_stream(&file_id)
@@ -393,38 +412,41 @@ impl GDriveMcpServer {
             std::path::PathBuf::from(os_str)
         };
 
-        let mut file = std::fs::File::create(&part_path).map_err(|e| {
-            ErrorData::internal_error(format!("Gagal membuat file sementara: {}", e), None)
-        })?;
-
-        let mut stream = stream_data.stream;
         let mut downloaded_bytes: u64 = 0;
+        let mut current_stream = stream_data.stream;
+        let mut stream_err = None;
 
-        let download_result: std::result::Result<(), ErrorData> = async {
-            while let Some(chunk_res) = stream.next().await {
-                let chunk = chunk_res.map_err(|e| {
-                    ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
-                })?;
-                file.write_all(&chunk).map_err(|e| {
-                    ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
-                })?;
-                downloaded_bytes += chunk.len() as u64;
+        for attempt in 1..=3 {
+            match write_chunks_to_part_file(&mut current_stream, &part_path).await {
+                Ok(bytes) => {
+                    downloaded_bytes = bytes;
+                    stream_err = None;
+                    break;
+                }
+                Err(_e) if attempt < 3 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    match client.download_file_stream(&file_id).await {
+                        Ok(new_dl) => current_stream = new_dl.stream,
+                        Err(err) => {
+                            stream_err = Some(ErrorData::internal_error(err.to_string(), None));
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    stream_err = Some(e);
+                }
             }
-            file.flush().map_err(|e| {
-                ErrorData::internal_error(format!("Gagal flush file sementara: {}", e), None)
-            })?;
-            drop(file);
-            std::fs::rename(&part_path, &out_path).map_err(|e| {
-                ErrorData::internal_error(format!("Gagal memindahkan file ke tujuan: {}", e), None)
-            })?;
-            Ok(())
         }
-        .await;
 
-        if let Err(e) = download_result {
+        if let Some(e) = stream_err {
             let _ = std::fs::remove_file(&part_path);
             return Err(e);
         }
+
+        std::fs::rename(&part_path, &out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal memindahkan file ke tujuan: {}", e), None)
+        })?;
 
         let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
 

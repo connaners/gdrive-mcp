@@ -11,12 +11,14 @@ use tokio::sync::RwLock;
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
 
+pub type DownloadByteStream = Box<dyn Stream<Item = reqwest::Result<Bytes>> + Unpin + Send>;
+
 /// Representasi stream download file beserta metadata
 pub struct DownloadStream {
     pub name: String,
     pub size: Option<u64>,
     pub mime_type: String,
-    pub stream: Box<dyn Stream<Item = reqwest::Result<Bytes>> + Unpin + Send>,
+    pub stream: DownloadByteStream,
 }
 
 #[derive(Clone)]
@@ -143,6 +145,29 @@ impl GDriveClient {
                     return Err(err.into());
                 }
             }
+        }
+    }
+
+    /// Mengirim request mutasi non-idempotent dengan bearer auth dan token refresh (pada 401),
+    /// tanpa retry spekulatif pada network drop atau 5xx untuk mencegah duplikasi (misal create folder)
+    /// atau menimpa konten yang diperbarui writer lain (misal update file).
+    pub async fn send_mutation<F>(&self, build: F) -> Result<reqwest::Response>
+    where
+        F: Fn(&str) -> reqwest::RequestBuilder,
+    {
+        let token = self.get_token().await;
+        let resp = build(&token).send().await;
+
+        match resp {
+            Ok(resp) => {
+                if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
+                    if let Ok(new_token) = self.force_refresh().await {
+                        return Ok(build(&new_token).send().await?);
+                    }
+                }
+                Ok(resp)
+            }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -521,7 +546,7 @@ impl GDriveClient {
 
         let content_bytes = final_content.into_bytes();
         let resp = self
-            .send_with_retry(|t| {
+            .send_mutation(|t| {
                 self.http
                     .patch(&upload_url)
                     .bearer_auth(t)
@@ -555,7 +580,7 @@ impl GDriveClient {
 
         let body_str = body.to_string();
         let resp = self
-            .send_with_retry(|t| {
+            .send_mutation(|t| {
                 self.http
                     .post(&url)
                     .bearer_auth(t)
