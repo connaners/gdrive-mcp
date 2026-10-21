@@ -4,7 +4,12 @@ use gdrive_core::{AuthManager, CreateFileOptions, GDriveClient};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "gdrive", author = "connaners", version = "0.1.0", about = "Google Drive CLI & MCP Server")]
+#[command(
+    name = "gdrive",
+    author = "connaners",
+    version = "0.1.0",
+    about = "Google Drive CLI & MCP Server"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -77,22 +82,26 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Auth { action } => match action {
-            AuthCommands::Status => {
-                match AuthManager::load_saved_token() {
-                    Ok(_) => {
-                        let path = AuthManager::token_path()?;
-                        eprintln!("Status: Terautentikasi (Token tersimpan di {:?})", path);
-                    }
-                    Err(e) => {
-                        eprintln!("Status: Belum terautentikasi ({})", e);
-                    }
+            AuthCommands::Status => match AuthManager::load_saved_token() {
+                Ok(_) => {
+                    let path = AuthManager::token_path()?;
+                    eprintln!("Status: Terautentikasi (Token tersimpan di {:?})", path);
                 }
-            }
+                Err(e) => {
+                    eprintln!("Status: Belum terautentikasi ({})", e);
+                }
+            },
         },
-        Commands::Search { query, folder, limit } => {
+        Commands::Search {
+            query,
+            folder,
+            limit,
+        } => {
             let token = AuthManager::load_saved_token()?;
             let client = GDriveClient::new(token.access_token);
-            let files = client.search_files(query.as_deref(), folder.as_deref(), Some(limit)).await?;
+            let files = client
+                .search_files(query.as_deref(), folder.as_deref(), Some(limit))
+                .await?;
             for f in files {
                 println!("{} | {} | {}", f.id, f.name, f.mime_type);
             }
@@ -103,7 +112,12 @@ async fn main() -> Result<()> {
             let text = client.read_file(&file_id).await?;
             println!("{}", text);
         }
-        Commands::Create { name, content, parent, docs } => {
+        Commands::Create {
+            name,
+            content,
+            parent,
+            docs,
+        } => {
             let token = AuthManager::load_saved_token()?;
             let client = GDriveClient::new(token.access_token);
             let created = client

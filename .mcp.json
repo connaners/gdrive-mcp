@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "forgeguard": {
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "command": "forgeguard"
+    }
+  }
+}

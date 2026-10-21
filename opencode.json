@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "forgeguard": {
+      "command": [
+        "forgeguard",
+        "mcp",
+        "serve"
+      ],
+      "enabled": true,
+      "type": "local"
+    }
+  }
+}

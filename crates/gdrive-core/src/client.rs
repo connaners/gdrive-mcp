@@ -26,10 +26,7 @@ impl GDriveClient {
             .build()
             .unwrap_or_default();
 
-        Self {
-            http,
-            access_token,
-        }
+        Self { http, access_token }
     }
 
     /// Mencari file atau folder di Google Drive (termasuk Shared Drives)
@@ -62,7 +59,10 @@ impl GDriveClient {
             .query(&[
                 ("q", full_q.as_str()),
                 ("pageSize", &limit.to_string()),
-                ("fields", "files(id, name, mimeType, webViewLink, parents, size, modifiedTime)"),
+                (
+                    "fields",
+                    "files(id, name, mimeType, webViewLink, parents, size, modifiedTime)",
+                ),
                 ("supportsAllDrives", "true"),
                 ("includeItemsFromAllDrives", "true"),
                 ("corpora", "allDrives"),
@@ -76,7 +76,10 @@ impl GDriveClient {
             bail!("Google Drive API search error: {}", err_text);
         }
 
-        let file_list: DriveFileList = resp.json().await.context("Gagal mendecode response file list")?;
+        let file_list: DriveFileList = resp
+            .json()
+            .await
+            .context("Gagal mendecode response file list")?;
         Ok(file_list.files)
     }
 
@@ -116,7 +119,10 @@ impl GDriveClient {
         }
 
         // 3. Untuk file biasa (misal .md, .txt, .json), unduh raw content via alt=media
-        let download_url = format!("{}/files/{}?alt=media&supportsAllDrives=true", DRIVE_API_BASE, file_id);
+        let download_url = format!(
+            "{}/files/{}?alt=media&supportsAllDrives=true",
+            DRIVE_API_BASE, file_id
+        );
         let resp = self.http.get(&download_url).send().await?;
         if !resp.status().is_success() {
             let err = resp.text().await.unwrap_or_default();
@@ -128,7 +134,10 @@ impl GDriveClient {
 
     /// Membuat file baru di Google Drive (opsional konversi ke native Google Docs)
     pub async fn create_file(&self, opts: CreateFileOptions) -> Result<DriveFile> {
-        let upload_url = format!("{}/files?uploadType=multipart&supportsAllDrives=true", UPLOAD_API_BASE);
+        let upload_url = format!(
+            "{}/files?uploadType=multipart&supportsAllDrives=true",
+            UPLOAD_API_BASE
+        );
 
         let target_mime = if opts.as_google_doc {
             "application/vnd.google-apps.document"

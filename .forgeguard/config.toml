@@ -1,0 +1,79 @@
+version = 2
+mode = "strict"
+
+[project]
+name = "gdrive-mcp"
+
+[scan]
+enabled = true
+max_file_bytes = 1000000
+include_tests = false
+extra_excludes = []
+duplicate_block_lines = 6
+taint_sources = []
+trusted_sanitizers = []
+
+[[commands]]
+name = "build"
+command = "cargo build --workspace"
+required = true
+enabled = true
+timeout_seconds = 600
+
+[[commands]]
+name = "dependency-audit"
+command = "cargo audit --deny warnings"
+required = true
+enabled = false
+timeout_seconds = 600
+
+[[commands]]
+name = "format"
+command = "cargo fmt --all -- --check"
+required = true
+enabled = true
+timeout_seconds = 600
+
+[[commands]]
+name = "lint"
+command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+required = true
+enabled = true
+timeout_seconds = 600
+
+[[commands]]
+name = "sbom"
+command = "cargo cyclonedx --format json --override-filename forgeguard-sbom"
+required = true
+enabled = false
+timeout_seconds = 600
+
+[[commands]]
+name = "supply-chain"
+command = "cargo deny check"
+required = true
+enabled = false
+timeout_seconds = 600
+
+[[commands]]
+name = "test"
+command = "cargo test --workspace"
+required = true
+enabled = true
+timeout_seconds = 600
+
+[focus]
+enabled = true
+max_retries = 3
+no_progress_limit = 2
+auto_poke = true
+max_auto_pokes = 3
+min_confidence = 80
+min_hill_climbability = 80
+
+[policies]
+
+[rules]
+
+[update]
+policy = "auto"

@@ -28,3 +28,6 @@ credentials.json
 client_secret*.json
 token.json
 *.token.json
+.claude/
+.cursor/
+.agents/

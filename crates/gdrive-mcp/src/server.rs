@@ -36,8 +36,12 @@ impl GDriveMcpServer {
     }
 
     fn client() -> Result<GDriveClient, ErrorData> {
-        let token = AuthManager::load_saved_token()
-            .map_err(|e| ErrorData::internal_error(format!("Auth error: {e}. Jalankan 'gdrive auth login' terlebih dahulu."), None))?;
+        let token = AuthManager::load_saved_token().map_err(|e| {
+            ErrorData::internal_error(
+                format!("Auth error: {e}. Jalankan 'gdrive auth login' terlebih dahulu."),
+                None,
+            )
+        })?;
         Ok(GDriveClient::new(token.access_token))
     }
 }
@@ -74,7 +78,11 @@ impl GDriveMcpServer {
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client()?;
         let files = client
-            .search_files(args.query.as_deref(), args.folder_id.as_deref(), args.page_size)
+            .search_files(
+                args.query.as_deref(),
+                args.folder_id.as_deref(),
+                args.page_size,
+            )
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
