@@ -141,11 +141,15 @@ Commands:
 ### Examples
 
 ```bash
-# Search for files matching "Roadmap" with order by
+# Search files with pretty table output (shows ID, Type icon, Name, Size, Modified Date)
 gdrive search "Roadmap" --limit 10 -s "modifiedTime desc"
 
 # Full-text search inside document contents
 gdrive search "API Authentication" --full-text
+
+# Output in JSON or plain format for scripts and piping
+gdrive search "Roadmap" --json
+gdrive search "Roadmap" --plain
 
 # Rename a file
 gdrive rename 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms "Roadmap-v2.md"
@@ -168,8 +172,10 @@ gdrive update 1A2B3C4D5E "## New Section" --append
 # Upload a local file
 gdrive upload ./report.pdf --parent 1A2B3C4D5E
 
-# Download a file from Drive
-gdrive download 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms -o ./downloaded.txt
+# Smart download: supports File ID, Drive URL, or File Name with interactive disambiguation
+gdrive download "Annual Report.pdf"
+gdrive download "https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/view"
+gdrive download 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms -o ~/Downloads/report.pdf
 
 # Create a folder
 gdrive mkdir "Sprint 42" --parent 1A2B3C4D5E
@@ -185,7 +191,7 @@ gdrive drives
 
 ## 🤖 MCP Server Tools (Model Context Protocol)
 
-When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 10 tools to LLMs:
+When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 11 tools to LLMs:
 
 | Tool Name | Description | Key Arguments |
 |:---|:---|:---|
@@ -194,6 +200,7 @@ When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 10 tool
 | `gdrive_list_folder` | List contents of a folder | `folder_id` (string), `page_size` (u32) |
 | `gdrive_create_file` | Create a new file or native Google Doc | `name` (string), `content` (string), `parent_folder_id` (string), `as_google_doc` (bool) |
 | `gdrive_update_file` | Update or append text to an existing file | `file_id` (string), `content` (string), `append` (bool) |
+| `gdrive_download_file` | Download a file to local disk by ID or name | `file_id_or_name` (string), `destination_path` (string) |
 | `gdrive_rename_file` | Rename a file or folder | `file_id` (string), `new_name` (string) |
 | `gdrive_move_file` | Move a file or folder to a target folder | `file_id` (string), `new_parent_id` (string), `old_parent_id` (string) |
 | `gdrive_create_folder`| Create a folder in personal or Shared Drives | `name` (string), `parent_folder_id` (string) |
