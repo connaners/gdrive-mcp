@@ -428,6 +428,7 @@ dependencies = [
  "clap",
  "gdrive-core",
  "gdrive-mcp",
+ "open",
  "tokio",
  "tracing",
  "tracing-subscriber",
