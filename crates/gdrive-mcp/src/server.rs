@@ -1,4 +1,5 @@
 use anyhow::Result;
+use futures_util::StreamExt;
 use gdrive_core::{CreateFileOptions, GDriveClient, UpdateFileOptions};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -7,11 +8,10 @@ use rmcp::{
     transport::stdio,
     ErrorData, Json, ServerHandler, ServiceExt,
 };
-use std::io::Write;
-use futures_util::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 
 use crate::models::{
     CreateFileArgs, CreateFolderArgs, DownloadFileArgs, ListDrivesArgs, ListFolderArgs,
@@ -318,7 +318,10 @@ impl GDriveMcpServer {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             if files.is_empty() {
                 return Err(ErrorData::invalid_params(
-                    format!("File dengan nama '{}' tidak ditemukan di Google Drive.", target),
+                    format!(
+                        "File dengan nama '{}' tidak ditemukan di Google Drive.",
+                        target
+                    ),
                     None,
                 ));
             }
@@ -347,17 +350,20 @@ impl GDriveMcpServer {
                 .join(&orig_name),
         };
 
-        let mut file = std::fs::File::create(&out_path)
-            .map_err(|e| ErrorData::internal_error(format!("Gagal membuat file lokal: {}", e), None))?;
+        let mut file = std::fs::File::create(&out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat file lokal: {}", e), None)
+        })?;
 
         let mut stream = stream_data.stream;
         let mut downloaded_bytes: u64 = 0;
 
         while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res
-                .map_err(|e| ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None))?;
-            file.write_all(&chunk)
-                .map_err(|e| ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None))?;
+            let chunk = chunk_res.map_err(|e| {
+                ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
+            })?;
+            file.write_all(&chunk).map_err(|e| {
+                ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
+            })?;
             downloaded_bytes += chunk.len() as u64;
         }
 
