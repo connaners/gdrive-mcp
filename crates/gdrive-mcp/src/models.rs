@@ -90,3 +90,12 @@ pub struct ListDrivesArgs {
     /// Batas jumlah Shared Drives yang ditampilkan (default: 50).
     pub page_size: Option<u32>,
 }
+
+/// Parameter untuk tool gdrive_download_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DownloadFileArgs {
+    /// ID Google Drive, URL Google Drive, atau nama file yang ingin diunduh ke disk lokal.
+    pub file_id_or_name: String,
+    /// Path folder atau file tujuan penyimpanan lokal (opsional, default: direktori kerja saat ini).
+    pub destination_path: Option<String>,
+}

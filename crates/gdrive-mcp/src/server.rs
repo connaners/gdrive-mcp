@@ -1,4 +1,5 @@
 use anyhow::Result;
+use futures_util::StreamExt;
 use gdrive_core::{CreateFileOptions, GDriveClient, UpdateFileOptions};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -10,10 +11,11 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 
 use crate::models::{
-    CreateFileArgs, CreateFolderArgs, ListDrivesArgs, ListFolderArgs, MoveFileArgs, ReadFileArgs,
-    RenameFileArgs, SearchFilesArgs, TrashFileArgs, UpdateFileArgs,
+    CreateFileArgs, CreateFolderArgs, DownloadFileArgs, ListDrivesArgs, ListFolderArgs,
+    MoveFileArgs, ReadFileArgs, RenameFileArgs, SearchFilesArgs, TrashFileArgs, UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -24,6 +26,59 @@ fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 pub struct ToolResponse {
     #[schemars(schema_with = "any_json_object")]
     pub result: Value,
+}
+
+async fn write_chunks_to_part_file(
+    stream: &mut gdrive_core::DownloadByteStream,
+    part_path: &std::path::Path,
+) -> std::result::Result<u64, ErrorData> {
+    let mut file = std::fs::File::create(part_path).map_err(|e| {
+        ErrorData::internal_error(format!("Gagal membuat file sementara: {}", e), None)
+    })?;
+    let mut downloaded_bytes: u64 = 0;
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.map_err(|e| {
+            ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None)
+        })?;
+        file.write_all(&chunk).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None)
+        })?;
+        downloaded_bytes += chunk.len() as u64;
+    }
+
+    file.flush().map_err(|e| {
+        ErrorData::internal_error(format!("Gagal flush file sementara: {}", e), None)
+    })?;
+    Ok(downloaded_bytes)
+}
+
+async fn resolve_mcp_target(
+    client: &GDriveClient,
+    target: &str,
+) -> std::result::Result<String, ErrorData> {
+    if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
+        if let Ok(meta) = client.get_file_metadata(target).await {
+            return Ok(meta.id);
+        }
+    }
+
+    let files = client
+        .find_files_by_name(target, 5)
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+    if files.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "File dengan ID atau nama '{}' tidak ditemukan di Google Drive.",
+                target
+            ),
+            None,
+        ));
+    }
+
+    Ok(files[0].id.clone())
 }
 
 #[derive(Clone)]
@@ -71,7 +126,8 @@ impl ServerHandler for GDriveMcpServer {
             Use gdrive_rename_file to rename a file or folder. \
             Use gdrive_move_file to move a file or folder to a target folder. \
             Use gdrive_trash_file to safely move files or folders to trash. \
-            Use gdrive_list_drives to list accessible Shared Drives.",
+            Use gdrive_list_drives to list accessible Shared Drives. \
+            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name.",
         )
     }
 }
@@ -291,6 +347,118 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(drives).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_download_file",
+        description = "Mengunduh file dari Google Drive ke disk lokal komputer. Menerima File ID atau nama file, serta opsional destination_path."
+    )]
+    pub async fn gdrive_download_file(
+        &self,
+        Parameters(args): Parameters<DownloadFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let target = args.file_id_or_name.trim();
+
+        // Resolusi target ke File ID
+        let file_id = resolve_mcp_target(&client, target).await?;
+
+        let stream_data = client
+            .download_file_stream(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let orig_name = stream_data.name.clone();
+        let mime_type = stream_data.mime_type.clone();
+
+        let clean_name = orig_name.replace('\\', "/");
+        let sanitized_name = std::path::Path::new(&clean_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.trim_start_matches('.'))
+            .filter(|n| !n.is_empty())
+            .unwrap_or("downloaded_file");
+
+        let out_path = match args.destination_path {
+            Some(p) => {
+                let pb = std::path::PathBuf::from(p);
+                if pb.is_dir() {
+                    pb.join(sanitized_name)
+                } else {
+                    pb
+                }
+            }
+            None => std::env::current_dir()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                .join(sanitized_name),
+        };
+
+        if let Ok(meta) = std::fs::symlink_metadata(&out_path) {
+            if meta.file_type().is_symlink() {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "Tujuan download {:?} adalah symbolic link yang tidak diizinkan.",
+                        out_path
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        let part_path = {
+            let mut os_str = out_path.as_os_str().to_os_string();
+            os_str.push(".gdrive_part");
+            std::path::PathBuf::from(os_str)
+        };
+
+        let mut downloaded_bytes: u64 = 0;
+        let mut current_stream = stream_data.stream;
+        let mut stream_err = None;
+
+        for attempt in 1..=3 {
+            match write_chunks_to_part_file(&mut current_stream, &part_path).await {
+                Ok(bytes) => {
+                    downloaded_bytes = bytes;
+                    stream_err = None;
+                    break;
+                }
+                Err(_e) if attempt < 3 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    match client.download_file_stream(&file_id).await {
+                        Ok(new_dl) => current_stream = new_dl.stream,
+                        Err(err) => {
+                            stream_err = Some(ErrorData::internal_error(err.to_string(), None));
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    stream_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(e) = stream_err {
+            let _ = std::fs::remove_file(&part_path);
+            return Err(e);
+        }
+
+        std::fs::rename(&part_path, &out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal memindahkan file ke tujuan: {}", e), None)
+        })?;
+
+        let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "file_name": orig_name,
+                "local_path": abs_path.to_string_lossy().to_string(),
+                "size_bytes": downloaded_bytes,
+                "mime_type": mime_type,
+                "status": "success"
+            }),
         }))
     }
 }

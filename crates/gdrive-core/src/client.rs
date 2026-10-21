@@ -3,17 +3,33 @@ use crate::models::{
     CreateFileOptions, DriveFile, DriveFileList, SearchFileOptions, UpdateFileOptions,
 };
 use anyhow::{bail, Context, Result};
+use bytes::Bytes;
+use futures_util::Stream;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
 
+pub type DownloadByteStream = Box<dyn Stream<Item = reqwest::Result<Bytes>> + Unpin + Send>;
+
+/// Representasi stream download file beserta metadata
+pub struct DownloadStream {
+    pub name: String,
+    pub size: Option<u64>,
+    pub mime_type: String,
+    pub stream: DownloadByteStream,
+}
+
 #[derive(Clone)]
 pub struct GDriveClient {
     http: reqwest::Client,
     access_token: Arc<RwLock<String>>,
     auto_refresh: bool,
+}
+
+pub fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
 impl GDriveClient {
@@ -65,22 +81,94 @@ impl GDriveClient {
         }
     }
 
-    /// Mengirim request dengan mekanisme retry otomatis satu kali jika terkena HTTP 401 Unauthorized
+    /// Mengirim request dengan mekanisme retry otomatis:
+    /// 1. HTTP 401 Unauthorized -> Refresh token dan coba kembali
+    /// 2. Transient status (HTTP 429, 500, 502, 503, 504) atau network failure -> Exponential backoff hingga 3x
     pub async fn send_with_retry<F>(&self, build: F) -> Result<reqwest::Response>
     where
         F: Fn(&str) -> reqwest::RequestBuilder,
     {
-        let token = self.get_token().await;
-        let resp = build(&token).send().await?;
+        const MAX_RETRIES: u32 = 3;
+        let mut attempt = 0;
+        let mut refreshed = false;
+        let mut backoff = std::time::Duration::from_millis(500);
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
-            if let Ok(new_token) = self.force_refresh().await {
-                let retry_resp = build(&new_token).send().await?;
-                return Ok(retry_resp);
+        loop {
+            let token = self.get_token().await;
+            let resp_result = build(&token).send().await;
+
+            match resp_result {
+                Ok(resp) => {
+                    // Cek jika 401 Unauthorized (refresh token sekali dan lanjutkan retry loop)
+                    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                        && self.auto_refresh
+                        && !refreshed
+                    {
+                        refreshed = true;
+                        if self.force_refresh().await.is_ok() {
+                            continue;
+                        }
+                    }
+
+                    // Cek transient status (429, 5xx)
+                    if is_transient_status(resp.status()) && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        tracing::warn!(
+                            "Menerima status {} dari Google Drive API. Mencoba ulang ({}/{})...",
+                            resp.status(),
+                            attempt,
+                            MAX_RETRIES
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                        continue;
+                    }
+
+                    return Ok(resp);
+                }
+                Err(err) => {
+                    // Network IO / timeout errors
+                    if (err.is_connect() || err.is_timeout() || err.is_request())
+                        && attempt < MAX_RETRIES
+                    {
+                        attempt += 1;
+                        tracing::warn!(
+                            "Gagal koneksi ke Google Drive API: {}. Mencoba ulang ({}/{})...",
+                            err,
+                            attempt,
+                            MAX_RETRIES
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                        continue;
+                    }
+                    return Err(err.into());
+                }
             }
         }
+    }
 
-        Ok(resp)
+    /// Mengirim request mutasi non-idempotent dengan bearer auth dan token refresh (pada 401),
+    /// tanpa retry spekulatif pada network drop atau 5xx untuk mencegah duplikasi (misal create folder)
+    /// atau menimpa konten yang diperbarui writer lain (misal update file).
+    pub async fn send_mutation<F>(&self, build: F) -> Result<reqwest::Response>
+    where
+        F: Fn(&str) -> reqwest::RequestBuilder,
+    {
+        let token = self.get_token().await;
+        let resp = build(&token).send().await;
+
+        match resp {
+            Ok(resp) => {
+                if resp.status() == reqwest::StatusCode::UNAUTHORIZED && self.auto_refresh {
+                    if let Ok(new_token) = self.force_refresh().await {
+                        return Ok(build(&new_token).send().await?);
+                    }
+                }
+                Ok(resp)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Membangun query string pencarian Google Drive yang aman dan resilient
@@ -458,7 +546,7 @@ impl GDriveClient {
 
         let content_bytes = final_content.into_bytes();
         let resp = self
-            .send_with_retry(|t| {
+            .send_mutation(|t| {
                 self.http
                     .patch(&upload_url)
                     .bearer_auth(t)
@@ -492,7 +580,7 @@ impl GDriveClient {
 
         let body_str = body.to_string();
         let resp = self
-            .send_with_retry(|t| {
+            .send_mutation(|t| {
                 self.http
                     .post(&url)
                     .bearer_auth(t)
@@ -674,6 +762,29 @@ impl GDriveClient {
         Ok(drive_list.drives)
     }
 
+    /// Mengambil metadata file berdasarkan ID jika ada
+    pub async fn get_file_metadata(&self, raw_id: &str) -> Result<DriveFile> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_resp = self
+            .send_with_retry(|t| {
+                self.http.get(&meta_url).bearer_auth(t).query(&[
+                    ("fields", "id, name, mimeType, size"),
+                    ("supportsAllDrives", "true"),
+                ])
+            })
+            .await
+            .context("Gagal mengambil metadata file")?;
+
+        if !meta_resp.status().is_success() {
+            let err = meta_resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil metadata file: {}", err);
+        }
+
+        let meta: DriveFile = meta_resp.json().await?;
+        Ok(meta)
+    }
+
     /// Mengunduh raw bytes file dari Google Drive beserta metadata nama file aslinya
     pub async fn download_file_bytes(&self, raw_id: &str) -> Result<(String, Vec<u8>)> {
         let file_id = Self::clean_file_id(raw_id);
@@ -726,6 +837,112 @@ impl GDriveClient {
         }
 
         Ok((meta.name, resp.bytes().await?.to_vec()))
+    }
+
+    /// Mengambil file sebagai stream byte untuk penghematan memori dan rendering progress bar
+    pub async fn download_file_stream(&self, raw_id: &str) -> Result<DownloadStream> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_resp = self
+            .send_with_retry(|t| {
+                self.http.get(&meta_url).bearer_auth(t).query(&[
+                    ("fields", "id, name, mimeType, size"),
+                    ("supportsAllDrives", "true"),
+                ])
+            })
+            .await
+            .context("Gagal mengambil metadata file untuk download")?;
+
+        if !meta_resp.status().is_success() {
+            let err = meta_resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil metadata file: {}", err);
+        }
+
+        let meta: DriveFile = meta_resp.json().await?;
+        let parsed_size = meta.size.as_deref().and_then(|s| s.parse::<u64>().ok());
+
+        // Auto-Export Google Workspace (Docs, Sheets, Slides, Drawings)
+        let workspace_export: Option<(&'static str, &'static str, &'static str)> =
+            match meta.mime_type.as_str() {
+                "application/vnd.google-apps.document" => Some(("text/plain", "txt", "text/plain")),
+                "application/vnd.google-apps.spreadsheet" => Some(("text/csv", "csv", "text/csv")),
+                "application/vnd.google-apps.presentation" => {
+                    Some(("application/pdf", "pdf", "application/pdf"))
+                }
+                "application/vnd.google-apps.drawing" => Some(("image/png", "png", "image/png")),
+                _ => None,
+            };
+
+        if let Some((export_mime, ext, out_mime)) = workspace_export {
+            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let resp = self
+                .send_with_retry(|t| {
+                    self.http
+                        .get(&export_url)
+                        .bearer_auth(t)
+                        .query(&[("mimeType", export_mime)])
+                })
+                .await?;
+
+            if !resp.status().is_success() {
+                let err = resp.text().await.unwrap_or_default();
+                bail!(
+                    "Gagal mengekspor file Google Workspace ({}): {}",
+                    meta.mime_type,
+                    err
+                );
+            }
+
+            let filename = format!("{}.{}", meta.name, ext);
+            let len = resp.content_length();
+            return Ok(DownloadStream {
+                name: filename,
+                size: len,
+                mime_type: out_mime.to_string(),
+                stream: Box::new(resp.bytes_stream()),
+            });
+        }
+
+        // Regular file media download
+        let download_url = format!(
+            "{}/files/{}?alt=media&supportsAllDrives=true",
+            DRIVE_API_BASE, file_id
+        );
+        let resp = self
+            .send_with_retry(|t| self.http.get(&download_url).bearer_auth(t))
+            .await?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengunduh file media: {}", err);
+        }
+
+        let total_size = parsed_size.or_else(|| resp.content_length());
+
+        Ok(DownloadStream {
+            name: meta.name,
+            size: total_size,
+            mime_type: meta.mime_type,
+            stream: Box::new(resp.bytes_stream()),
+        })
+    }
+
+    /// Mencari file berdasarkan nama (exact match atau contains)
+    pub async fn find_files_by_name(&self, name_query: &str, limit: u32) -> Result<Vec<DriveFile>> {
+        let escaped = name_query.trim().replace('\\', "\\\\").replace('\'', "\\'");
+        let query_predicate = format!("name contains '{escaped}'");
+
+        let res = self
+            .search_files_with_options(SearchFileOptions {
+                query: Some(query_predicate),
+                folder_id: None,
+                page_size: Some(limit),
+                page_token: None,
+                full_text: false,
+                order_by: Some("folder,name,modifiedTime desc".to_string()),
+            })
+            .await?;
+        Ok(res.files)
     }
 
     /// Mengupload file lokal dari disk ke Google Drive
@@ -886,5 +1103,36 @@ mod tests {
             q,
             "trashed = false and mimeType = 'application/pdf' and name contains 'RFC'"
         );
+    }
+
+    #[test]
+    fn test_build_search_query_name_predicate_with_and_operator() {
+        let name_query = "Romeo and Juliet's notes.txt";
+        let escaped = name_query.trim().replace('\\', "\\\\").replace('\'', "\\'");
+        let query_predicate = format!("name contains '{escaped}'");
+        let opts = SearchFileOptions {
+            query: Some(query_predicate),
+            ..Default::default()
+        };
+        let q = GDriveClient::build_search_query(&opts);
+        assert_eq!(
+            q,
+            "trashed = false and name contains 'Romeo and Juliet\\'s notes.txt'"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_status() {
+        assert!(is_transient_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_transient_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(is_transient_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_transient_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(is_transient_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(!is_transient_status(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_transient_status(reqwest::StatusCode::FORBIDDEN));
     }
 }
