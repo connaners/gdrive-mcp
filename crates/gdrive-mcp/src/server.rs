@@ -7,13 +7,15 @@ use rmcp::{
     transport::stdio,
     ErrorData, Json, ServerHandler, ServiceExt,
 };
+use std::io::Write;
+use futures_util::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::models::{
-    CreateFileArgs, CreateFolderArgs, ListDrivesArgs, ListFolderArgs, MoveFileArgs, ReadFileArgs,
-    RenameFileArgs, SearchFilesArgs, TrashFileArgs, UpdateFileArgs,
+    CreateFileArgs, CreateFolderArgs, DownloadFileArgs, ListDrivesArgs, ListFolderArgs,
+    MoveFileArgs, ReadFileArgs, RenameFileArgs, SearchFilesArgs, TrashFileArgs, UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -71,7 +73,8 @@ impl ServerHandler for GDriveMcpServer {
             Use gdrive_rename_file to rename a file or folder. \
             Use gdrive_move_file to move a file or folder to a target folder. \
             Use gdrive_trash_file to safely move files or folders to trash. \
-            Use gdrive_list_drives to list accessible Shared Drives.",
+            Use gdrive_list_drives to list accessible Shared Drives. \
+            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name.",
         )
     }
 }
@@ -291,6 +294,84 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(drives).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_download_file",
+        description = "Mengunduh file dari Google Drive ke disk lokal komputer. Menerima File ID atau nama file, serta opsional destination_path."
+    )]
+    pub async fn gdrive_download_file(
+        &self,
+        Parameters(args): Parameters<DownloadFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let target = args.file_id_or_name.trim();
+
+        // Resolusi target ke File ID
+        let file_id = if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
+            target.to_string()
+        } else {
+            let files = client
+                .find_files_by_name(target, 5)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            if files.is_empty() {
+                return Err(ErrorData::invalid_params(
+                    format!("File dengan nama '{}' tidak ditemukan di Google Drive.", target),
+                    None,
+                ));
+            }
+            files[0].id.clone()
+        };
+
+        let stream_data = client
+            .download_file_stream(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let orig_name = stream_data.name.clone();
+        let mime_type = stream_data.mime_type.clone();
+
+        let out_path = match args.destination_path {
+            Some(p) => {
+                let pb = std::path::PathBuf::from(p);
+                if pb.is_dir() {
+                    pb.join(&orig_name)
+                } else {
+                    pb
+                }
+            }
+            None => std::env::current_dir()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                .join(&orig_name),
+        };
+
+        let mut file = std::fs::File::create(&out_path)
+            .map_err(|e| ErrorData::internal_error(format!("Gagal membuat file lokal: {}", e), None))?;
+
+        let mut stream = stream_data.stream;
+        let mut downloaded_bytes: u64 = 0;
+
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res
+                .map_err(|e| ErrorData::internal_error(format!("Koneksi streaming terputus: {}", e), None))?;
+            file.write_all(&chunk)
+                .map_err(|e| ErrorData::internal_error(format!("Gagal menulis byte ke disk: {}", e), None))?;
+            downloaded_bytes += chunk.len() as u64;
+        }
+
+        let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "file_name": orig_name,
+                "local_path": abs_path.to_string_lossy().to_string(),
+                "size_bytes": downloaded_bytes,
+                "mime_type": mime_type,
+                "status": "success"
+            }),
         }))
     }
 }
