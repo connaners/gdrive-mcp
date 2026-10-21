@@ -45,6 +45,12 @@ enum Commands {
         /// Token halaman untuk melanjutkan pencarian (pagination)
         #[arg(long)]
         page_token: Option<String>,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+        /// Tampilkan output dalam format teks sederhana (ID | Name | Mime)
+        #[arg(long)]
+        plain: bool,
     },
     /// Ganti nama file atau folder di Google Drive
     Rename {
@@ -180,7 +186,9 @@ async fn main() -> Result<()> {
             full_text,
             order_by,
             page_token,
-        } => handle_search(query, folder, limit, full_text, order_by, page_token).await,
+            json,
+            plain,
+        } => handle_search(query, folder, limit, full_text, order_by, page_token, json, plain).await,
         Commands::Rename { file_id, new_name } => handle_rename(file_id, new_name).await,
         Commands::Move {
             file_id,
@@ -395,6 +403,8 @@ async fn handle_search(
     full_text: bool,
     order_by: Option<String>,
     page_token: Option<String>,
+    json: bool,
+    plain: bool,
 ) -> Result<()> {
     let client = GDriveClient::from_saved_token().await?;
     let res = client
@@ -408,8 +418,14 @@ async fn handle_search(
         })
         .await?;
 
-    for f in res.files {
-        println!("{} | {} | {}", f.id, f.name, f.mime_type);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&res.files)?);
+    } else if plain {
+        for f in &res.files {
+            println!("{} | {} | {}", f.id, f.name, f.mime_type);
+        }
+    } else {
+        println!("{}", format::render_files_table(&res.files));
     }
 
     if let Some(token) = res.next_page_token {
