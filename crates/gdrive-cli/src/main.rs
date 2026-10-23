@@ -36,6 +36,12 @@ enum Commands {
         #[command(subcommand)]
         action: AuthCommands,
     },
+    /// Tampilkan informasi akun Google Drive dan kuota penyimpanan (storage quota)
+    About {
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
     /// Cari file atau folder di Google Drive
     Search {
         /// Kata kunci query nama file (dapat berupa banyak kata tanpa tanda petik, misal: gdrive search iboss v2)
@@ -472,6 +478,10 @@ async fn dispatch_file_mutation(cmd: Commands) -> Result<Option<Commands>> {
 
 async fn dispatch_query_command(cmd: Commands) -> Result<Option<Commands>> {
     match cmd {
+        Commands::About { json } => {
+            handle_about(json).await?;
+            Ok(None)
+        }
         Commands::Search {
             query,
             folder,
@@ -602,27 +612,41 @@ async fn handle_auth_login(no_browser: bool, profile: Option<String>) -> Result<
 fn handle_auth_status(profile: Option<String>) -> Result<()> {
     let active = AuthManager::get_active_profile();
     let target = profile.as_deref().unwrap_or(&active);
-    eprintln!("Profil: '{}' (aktif: '{}')", target, active);
+    println!("Profil: '{}' (aktif: '{}')", target, active);
     match AuthManager::load_saved_token_for_profile(Some(target)) {
         Ok(token) => {
             let path = AuthManager::token_path_for_profile(Some(target))?;
-            eprintln!("Status: Terautentikasi");
-            eprintln!("Lokasi token: {:?}", path);
+            println!("Status: Terautentikasi");
+            let name = token
+                .display_name
+                .as_deref()
+                .filter(|s| !s.trim().is_empty());
+            let email = token
+                .account_email
+                .as_deref()
+                .filter(|s| !s.trim().is_empty());
+            match (name, email) {
+                (Some(name), Some(email)) => println!("Akun Google: {} ({})", name, email),
+                (None, Some(email)) => println!("Akun Google: {}", email),
+                (Some(name), None) => println!("Akun Google: {}", name),
+                (None, None) => println!("Akun Google: Terhubung (tanpa detail email)"),
+            }
+            println!("Lokasi token: {:?}", path);
             if let Some(remaining) = token.seconds_remaining() {
                 let mins = remaining / 60;
                 let secs = remaining % 60;
-                eprintln!("Masa berlaku token: {}m {}s tersisa", mins, secs);
+                println!("Masa berlaku token: {}m {}s tersisa", mins, secs);
             } else {
-                eprintln!("Masa berlaku token: Tidak ada info expiry");
+                println!("Masa berlaku token: Tidak ada info expiry");
             }
             if token.refresh_token.is_some() {
-                eprintln!("Auto-refresh: Aktif (refresh token tersedia)");
+                println!("Auto-refresh: Aktif (refresh token tersedia)");
             } else {
-                eprintln!("Auto-refresh: Non-aktif (refresh token tidak tersedia)");
+                println!("Auto-refresh: Non-aktif (refresh token tidak tersedia)");
             }
         }
         Err(e) => {
-            eprintln!("Status: Belum terautentikasi ({})", e);
+            println!("Status: Belum terautentikasi ({})", e);
         }
     }
     Ok(())
@@ -642,21 +666,21 @@ fn handle_auth_logout(profile: Option<String>) -> Result<()> {
 fn handle_auth_profile(action: ProfileCommands) -> Result<()> {
     match action {
         ProfileCommands::List => {
-            let active = AuthManager::get_active_profile();
-            let profiles = AuthManager::list_profiles()?;
-            println!("Profil Google Drive terdaftar:");
-            for p in profiles {
-                if p == active {
-                    println!("* {} (aktif)", p);
-                } else {
-                    println!("  {}", p);
-                }
-            }
+            let statuses = AuthManager::get_all_profiles_status()?;
+            println!("{}", format::render_profiles_table(&statuses));
         }
         ProfileCommands::Switch { name } => {
-            AuthManager::set_active_profile(&name)?;
-            eprintln!("✅ Berhasil beralih ke profil '{}'.", name);
-            println!("Active profile: {}", name);
+            let trimmed = AuthManager::validate_profile_name(&name)?;
+            let is_authenticated = AuthManager::load_saved_token_for_profile(Some(trimmed)).is_ok();
+            AuthManager::set_active_profile(trimmed)?;
+            eprintln!("✅ Berhasil beralih ke profil '{}'.", trimmed);
+            if !is_authenticated {
+                eprintln!(
+                    "⚠️ Profil '{}' belum terautentikasi. Jalankan 'gdrive auth login --profile {}' untuk melakukan login.",
+                    trimmed, trimmed
+                );
+            }
+            println!("Active profile: {}", trimmed);
         }
         ProfileCommands::Remove { name } => {
             AuthManager::remove_profile(&name)?;
@@ -1239,6 +1263,19 @@ async fn handle_drives(limit: u32) -> Result<()> {
             println!("{} | {}", d.id, d.name);
         }
     }
+    Ok(())
+}
+
+async fn handle_about(json: bool) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    let about = client.get_about().await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&about)?);
+    } else {
+        println!("{}", format::render_about(&about));
+    }
+
     Ok(())
 }
 

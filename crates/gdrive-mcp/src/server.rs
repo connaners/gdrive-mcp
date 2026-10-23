@@ -15,11 +15,11 @@ use std::io::Write;
 
 use crate::models::{
     AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
-    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetFileInfoArgs, GetRevisionArgs,
-    GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs, ListPermissionsArgs,
-    ListRevisionsArgs, ListTrashArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs,
-    ResolveCommentArgs, RestoreFileArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs,
-    TrashFileArgs, UpdateFileArgs,
+    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetAboutArgs, GetFileInfoArgs,
+    GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs,
+    ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs, MoveFileArgs,
+    ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, SearchFilesArgs,
+    SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs, UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -83,6 +83,29 @@ async fn resolve_mcp_target(
         ));
     }
 
+    if files.len() > 1 {
+        let matches_desc: Vec<String> = files
+            .iter()
+            .map(|f| {
+                format!(
+                    "- ID: {}, Nama: '{}', Terakhir diubah: {}",
+                    f.id,
+                    f.name,
+                    f.modified_time.as_deref().unwrap_or("-")
+                )
+            })
+            .collect();
+        return Err(ErrorData::invalid_params(
+            format!(
+                "Ditemukan {} file yang cocok dengan nama '{}'. Harap spesifikasikan ID file secara eksplisit:\n{}",
+                files.len(),
+                target,
+                matches_desc.join("\n")
+            ),
+            None,
+        ));
+    }
+
     Ok(files[0].id.clone())
 }
 
@@ -106,7 +129,7 @@ impl GDriveMcpServer {
         })
     }
 
-    async fn client() -> Result<GDriveClient, ErrorData> {
+    pub async fn client() -> Result<GDriveClient, ErrorData> {
         Self::client_for_profile(None).await
     }
 }
@@ -126,7 +149,10 @@ impl ServerHandler for GDriveMcpServer {
                 .with_description("MCP tools for searching, reading, creating, updating, and organizing Google Drive files & Docs"),
         )
         .with_instructions(
-            "Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, and pagination. \
+            "Use gdrive_list_profiles to see configured Google Drive accounts/profiles and which one is active. \
+            Use gdrive_switch_profile to switch the active profile. \
+            Use gdrive_get_about to check storage quota (usage and limits) and current user identity. \
+            Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, and pagination. \
             Use gdrive_read_file to read document contents (auto-converts Google Docs to markdown, Sheets to CSV, Slides to text). \
             Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date) without reading full contents. \
             Use gdrive_create_file to write or upload documents, with optional conversion to native Google Docs. \
@@ -159,6 +185,70 @@ impl ServerHandler for GDriveMcpServer {
 #[tool_router(router = tool_router)]
 impl GDriveMcpServer {
     #[tool(
+        name = "gdrive_list_profiles",
+        description = "Melihat daftar profil akun Google Drive yang tersimpan (multi-account), status aktif, email akun, dan masa berlaku token."
+    )]
+    pub async fn gdrive_list_profiles(
+        &self,
+        Parameters(_args): Parameters<ListProfilesArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let statuses = gdrive_core::AuthManager::get_all_profiles_status()
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(statuses)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_switch_profile",
+        description = "Beralih ke profil akun Google Drive lain agar menjadi profil aktif default."
+    )]
+    pub async fn gdrive_switch_profile(
+        &self,
+        Parameters(args): Parameters<SwitchProfileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let name = gdrive_core::AuthManager::validate_profile_name(&args.name)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        gdrive_core::AuthManager::set_active_profile(name)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let token_exists = gdrive_core::AuthManager::token_path_for_profile(Some(name))
+            .map(|p| p.exists())
+            .unwrap_or(false);
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "status": "success",
+                "active_profile": name,
+                "is_authenticated": token_exists
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_about",
+        description = "Melihat informasi akun Google Drive (nama, email pengguna) dan kuota penyimpanan (storage quota limit, usage, usage in Drive & Trash)."
+    )]
+    pub async fn gdrive_get_about(
+        &self,
+        Parameters(args): Parameters<GetAboutArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let about = client
+            .get_about()
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(about)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
         name = "gdrive_search",
         description = "Cari file atau folder di Google Drive pribadi maupun Shared Drives menggunakan query nama atau folder. Mendukung full-text search, ordering, dan pagination."
     )]
@@ -166,7 +256,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<SearchFilesArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let res = client
             .search_files_with_options(gdrive_core::SearchFileOptions {
                 query: args.query,
@@ -195,7 +285,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ReadFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let content = client
             .read_file(&args.file_id)
             .await
@@ -217,7 +307,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListFolderArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let files = client
             .search_files(None, args.folder_id.as_deref(), args.page_size)
             .await
@@ -236,7 +326,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<CreateFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let created = client
             .create_file(CreateFileOptions {
                 name: args.name,
@@ -260,7 +350,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<UpdateFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let updated = client
             .update_file(UpdateFileOptions {
                 file_id: args.file_id,
@@ -283,7 +373,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<CreateFolderArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let folder = client
             .create_folder(&args.name, args.parent_folder_id.as_deref())
             .await
@@ -302,7 +392,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<TrashFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let trashed = client
             .trash_file(&args.file_id)
             .await
@@ -321,7 +411,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<RenameFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let renamed = client
             .rename_file(&args.file_id, &args.new_name)
             .await
@@ -340,7 +430,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<MoveFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let moved = client
             .move_file(
                 &args.file_id,
@@ -363,7 +453,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListDrivesArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let drives = client
             .list_drives(args.page_size)
             .await
@@ -382,7 +472,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<DownloadFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let target = args.file_id_or_name.trim();
 
         // Resolusi target ke File ID
@@ -494,7 +584,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<CopyFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let copied = client
             .copy_file(
                 &args.file_id,
@@ -518,7 +608,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<GetFileInfoArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let meta = client
             .get_file_metadata(&file_id)
@@ -539,7 +629,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListPermissionsArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let perms = client
             .list_permissions(&file_id)
@@ -560,7 +650,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ShareFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let permission_type = if args.permission_type == "anyone"
             && args
@@ -624,7 +714,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<DeletePermissionArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
 
         client
@@ -649,7 +739,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<GetShareableLinkArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let make_public = args.make_public.unwrap_or(false);
 
@@ -675,7 +765,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListCommentsArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let comments = client
             .list_comments(&file_id, args.page_size)
@@ -696,7 +786,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<AddCommentArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let comment = client
             .create_comment(&file_id, &args.content)
@@ -717,7 +807,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ResolveCommentArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let comment = client
             .resolve_comment(&file_id, &args.comment_id)
@@ -738,7 +828,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListTrashArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let res = client
             .list_trash(args.page_size, args.page_token.as_deref())
             .await
@@ -758,7 +848,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<RestoreFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let restored = client
             .restore_trash_file(&args.file_id)
             .await
@@ -785,7 +875,7 @@ impl GDriveMcpServer {
             ));
         }
 
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         client
             .empty_trash()
             .await
@@ -806,7 +896,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<ListRevisionsArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let revisions = client
             .list_revisions(&file_id)
@@ -827,7 +917,7 @@ impl GDriveMcpServer {
         &self,
         Parameters(args): Parameters<GetRevisionArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
-        let client = Self::client().await?;
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let (filename, bytes) = client
             .download_revision_bytes(&file_id, &args.revision_id)
@@ -911,4 +1001,19 @@ pub async fn run_stdio() -> Result<()> {
     let server = GDriveMcpServer::new().serve(stdio()).await?;
     server.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_server_info_instructions() {
+        let server = GDriveMcpServer::new();
+        let info = server.get_info();
+        let instructions = info.instructions.unwrap_or_default();
+        assert!(instructions.contains("gdrive_list_profiles"));
+        assert!(instructions.contains("gdrive_switch_profile"));
+        assert!(instructions.contains("gdrive_get_about"));
+    }
 }

@@ -1,6 +1,23 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// Parameter untuk tool gdrive_list_profiles
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListProfilesArgs {}
+
+/// Parameter untuk tool gdrive_switch_profile
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SwitchProfileArgs {
+    /// Nama profil Google Drive yang ingin dijadikan aktif (contoh: 'work', 'personal', 'default').
+    pub name: String,
+}
+
+/// Parameter untuk tool gdrive_get_about
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetAboutArgs {
+    /// Nama profile akun Google Drive spesifik yang ingin diperiksa (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchFilesArgs {
     /// Kata kunci nama file atau query Google Drive (misal: "notes" atau "name contains 'notes'").
@@ -15,6 +32,8 @@ pub struct SearchFilesArgs {
     pub full_text: Option<bool>,
     /// Pengurutan hasil pencarian (contoh: 'modifiedTime desc', 'name', 'folder,name').
     pub order_by: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -23,6 +42,8 @@ pub struct RenameFileArgs {
     pub file_id: String,
     /// Nama baru untuk file atau folder tersebut.
     pub new_name: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -33,12 +54,16 @@ pub struct MoveFileArgs {
     pub new_parent_id: String,
     /// ID folder asal jika diketahui (opsional, jika tidak diberikan akan otomatis dideteksi).
     pub old_parent_id: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadFileArgs {
     /// ID unik file di Google Drive yang ingin dibaca.
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -47,6 +72,8 @@ pub struct ListFolderArgs {
     pub folder_id: Option<String>,
     /// Batas jumlah item yang ditampilkan (default: 50).
     pub page_size: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -59,6 +86,8 @@ pub struct CreateFileArgs {
     pub parent_folder_id: Option<String>,
     /// Jika true, otomatis dikonversi menjadi native Google Docs agar bisa diedit di browser.
     pub as_google_doc: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -69,6 +98,8 @@ pub struct UpdateFileArgs {
     pub content: String,
     /// Jika true, konten baru akan ditambahkan di akhir file lama (append mode). Default false (overwrite).
     pub append: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -77,18 +108,24 @@ pub struct CreateFolderArgs {
     pub name: String,
     /// ID folder induk tempat folder baru akan diletakkan (opsional, jika kosong di root).
     pub parent_folder_id: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TrashFileArgs {
     /// ID unik file di Google Drive yang ingin dipindahkan ke tempat sampah (Safe Trash).
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListDrivesArgs {
     /// Batas jumlah Shared Drives yang ditampilkan (default: 50).
     pub page_size: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_download_file
@@ -98,6 +135,8 @@ pub struct DownloadFileArgs {
     pub file_id_or_name: String,
     /// Path folder atau file tujuan penyimpanan lokal (opsional, default: direktori kerja saat ini).
     pub destination_path: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_copy_file
@@ -109,6 +148,8 @@ pub struct CopyFileArgs {
     pub new_name: Option<String>,
     /// ID folder tujuan tempat file salinan disimpan (opsional, jika kosong disimpan di folder yang sama atau root).
     pub parent_folder_id: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_get_file_info
@@ -116,6 +157,8 @@ pub struct CopyFileArgs {
 pub struct GetFileInfoArgs {
     /// ID unik atau URL Google Drive dari file/folder yang ingin diperiksa metadatanya.
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_list_permissions
@@ -123,6 +166,8 @@ pub struct GetFileInfoArgs {
 pub struct ListPermissionsArgs {
     /// ID unik atau URL Google Drive dari file atau folder yang ingin diperiksa daftar permission/hak aksesnya.
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_share_file
@@ -140,6 +185,8 @@ pub struct ShareFileArgs {
     pub send_notification: Option<bool>,
     /// Nama domain target jika permission_type adalah 'domain' (contoh: 'example.com').
     pub domain: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_delete_permission
@@ -149,6 +196,8 @@ pub struct DeletePermissionArgs {
     pub file_id: String,
     /// ID permission yang ingin dihapus (dapat diperoleh dari gdrive_list_permissions).
     pub permission_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_get_shareable_link
@@ -158,6 +207,8 @@ pub struct GetShareableLinkArgs {
     pub file_id: String,
     /// Jika true, otomatis membuat permission publik (anyone with link as reader) jika belum publik. Default false.
     pub make_public: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_list_comments
@@ -167,6 +218,8 @@ pub struct ListCommentsArgs {
     pub file_id: String,
     /// Batas jumlah komentar yang diambil (default: 50, maksimal: 100).
     pub page_size: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_add_comment
@@ -176,6 +229,8 @@ pub struct AddCommentArgs {
     pub file_id: String,
     /// Isi teks komentar atau feedback.
     pub content: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_resolve_comment
@@ -185,6 +240,8 @@ pub struct ResolveCommentArgs {
     pub file_id: String,
     /// ID komentar yang ingin ditandai terselesaikan (resolved).
     pub comment_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_list_trash
@@ -194,6 +251,8 @@ pub struct ListTrashArgs {
     pub page_size: Option<u32>,
     /// Token halaman untuk melanjutkan pagination jika hasil sebelumnya terpotong.
     pub page_token: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_restore_file
@@ -201,6 +260,8 @@ pub struct ListTrashArgs {
 pub struct RestoreFileArgs {
     /// ID unik atau URL Google Drive dari file yang ingin dipulihkan dari tempat sampah.
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_empty_trash
@@ -208,6 +269,8 @@ pub struct RestoreFileArgs {
 pub struct EmptyTrashArgs {
     /// Konfirmasi eksplisit untuk mengosongkan tempat sampah secara permanen (harus true).
     pub confirm: bool,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_list_revisions
@@ -215,6 +278,8 @@ pub struct EmptyTrashArgs {
 pub struct ListRevisionsArgs {
     /// ID unik atau URL Google Drive dari file yang ingin diperiksa riwayat versinya.
     pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_get_revision
@@ -224,6 +289,8 @@ pub struct GetRevisionArgs {
     pub file_id: String,
     /// ID spesifik revisi/versi yang ingin diambil.
     pub revision_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_check_update
@@ -302,5 +369,8 @@ mod tests {
         assert_no_raw_bool::<GetRevisionArgs>();
         assert_no_raw_bool::<CheckUpdateArgs>();
         assert_no_raw_bool::<SelfUpdateArgs>();
+        assert_no_raw_bool::<ListProfilesArgs>();
+        assert_no_raw_bool::<SwitchProfileArgs>();
+        assert_no_raw_bool::<GetAboutArgs>();
     }
 }

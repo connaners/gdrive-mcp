@@ -17,6 +17,10 @@ pub struct TokenData {
     pub expires_at: Option<u64>,
     #[serde(default = "default_token_type")]
     pub token_type: String,
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 impl TokenData {
@@ -73,6 +77,17 @@ pub struct ProfilesConfig {
     pub active_profile: String,
     #[serde(default = "default_profiles_list")]
     pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileStatusInfo {
+    pub name: String,
+    pub is_active: bool,
+    pub is_authenticated: bool,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub expires_in_seconds: Option<u64>,
+    pub token_path: PathBuf,
 }
 
 fn default_active_profile() -> String {
@@ -247,6 +262,52 @@ impl AuthManager {
         Ok(list)
     }
 
+    /// Mengambil status lengkap dari semua profile yang terdaftar
+    pub fn get_all_profiles_status() -> Result<Vec<ProfileStatusInfo>> {
+        let active = Self::get_active_profile();
+        let mut profile_names = Self::list_profiles()?;
+        if !profile_names.iter().any(|p| p == &active)
+            && Self::validate_profile_name(&active).is_ok()
+        {
+            profile_names.push(active.clone());
+        }
+        let mut results = Vec::new();
+
+        for name in profile_names {
+            let is_active = name == active;
+            let token_path = match Self::token_path_for_profile(Some(&name)) {
+                Ok(p) => p,
+                Err(_) => PathBuf::from(""),
+            };
+
+            let mut is_authenticated = false;
+            let mut email = None;
+            let mut display_name = None;
+            let mut expires_in_seconds = None;
+
+            if token_path.exists() {
+                if let Ok(token_data) = Self::load_saved_token_for_profile(Some(&name)) {
+                    is_authenticated = true;
+                    expires_in_seconds = token_data.seconds_remaining();
+                    email = token_data.account_email;
+                    display_name = token_data.display_name;
+                }
+            }
+
+            results.push(ProfileStatusInfo {
+                name,
+                is_active,
+                is_authenticated,
+                email,
+                display_name,
+                expires_in_seconds,
+                token_path,
+            });
+        }
+
+        Ok(results)
+    }
+
     /// Mendaftarkan nama profile baru ke profiles.json
     pub fn register_profile(name: &str) -> Result<()> {
         let trimmed = Self::validate_profile_name(name)?;
@@ -304,9 +365,18 @@ impl AuthManager {
 
     /// Membaca token untuk profile tertentu
     pub fn load_saved_token_for_profile(profile: Option<&str>) -> Result<TokenData> {
-        let path = Self::token_path_for_profile(profile)?;
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Belum login. File token tidak ditemukan di {:?}", path))?;
+        let active_name = match profile {
+            Some(p) => p.to_string(),
+            None => Self::get_active_profile(),
+        };
+        let path = Self::token_path_for_profile(Some(&active_name))?;
+        let content = std::fs::read_to_string(&path).map_err(|_| {
+            anyhow::anyhow!(
+                "Belum login untuk profil '{}'. Jalankan 'gdrive auth login' (atau 'gdrive auth login --profile {}') untuk mengotorisasi akun Google Drive.",
+                active_name,
+                active_name
+            )
+        })?;
         let token: TokenData = serde_json::from_str(&content)?;
         Ok(token)
     }
@@ -342,7 +412,13 @@ impl AuthManager {
 
         if let Some(ref rf) = saved.refresh_token {
             let auth = Self::from_env_or_config()?;
-            let refreshed = auth.refresh_access_token(rf).await?;
+            let mut refreshed = auth.refresh_access_token(rf).await?;
+            if refreshed.account_email.is_none() {
+                refreshed.account_email = saved.account_email;
+            }
+            if refreshed.display_name.is_none() {
+                refreshed.display_name = saved.display_name;
+            }
             Self::save_token_for_profile(profile, &refreshed)?;
             Ok(refreshed.access_token)
         } else {
@@ -355,7 +431,13 @@ impl AuthManager {
         let saved = Self::load_saved_token_for_profile(profile)?;
         if let Some(ref rf) = saved.refresh_token {
             let auth = Self::from_env_or_config()?;
-            let refreshed = auth.refresh_access_token(rf).await?;
+            let mut refreshed = auth.refresh_access_token(rf).await?;
+            if refreshed.account_email.is_none() {
+                refreshed.account_email = saved.account_email;
+            }
+            if refreshed.display_name.is_none() {
+                refreshed.display_name = saved.display_name;
+            }
             Self::save_token_for_profile(profile, &refreshed)?;
             Ok(refreshed.access_token)
         } else {
@@ -496,7 +578,7 @@ impl AuthManager {
             .append_pair("response_type", "code")
             .append_pair("scope", DRIVE_SCOPES)
             .append_pair("access_type", "offline")
-            .append_pair("prompt", "consent");
+            .append_pair("prompt", "select_account consent");
         Ok(u.to_string())
     }
 
@@ -586,10 +668,34 @@ impl AuthManager {
         };
 
         eprintln!("Kode otorisasi berhasil ditangkap. Menukarkan dengan access token...");
-        let token = self.exchange_code(&code, &redirect_uri).await?;
+        let mut token = self.exchange_code(&code, &redirect_uri).await?;
+
+        // Resolusi identitas akun Google Drive (email & display name)
+        if let Ok(about_resp) = reqwest::Client::new()
+            .get("https://www.googleapis.com/drive/v3/about?fields=user")
+            .bearer_auth(&token.access_token)
+            .send()
+            .await
+        {
+            if about_resp.status().is_success() {
+                if let Ok(about_data) = about_resp.json::<crate::models::DriveAbout>().await {
+                    if let Some(user) = about_data.user {
+                        token.account_email = user.email_address;
+                        token.display_name = user.display_name;
+                    }
+                }
+            }
+        }
+
         Self::save_token_for_profile(profile, &token)?;
+        if let Some(p) = profile {
+            let _ = Self::set_active_profile(p);
+        }
         let path = Self::token_path_for_profile(profile)?;
         eprintln!("Token berhasil disimpan di {:?}", path);
+        if let Some(ref email) = token.account_email {
+            eprintln!("Akun terhubung: {}", email);
+        }
         Ok(token)
     }
 
@@ -709,6 +815,8 @@ mod tests {
             expires_in: Some(3600),
             expires_at: Some(now + 3600),
             token_type: "Bearer".to_string(),
+            account_email: None,
+            display_name: None,
         };
         assert!(!valid_token.is_expired());
         assert!(valid_token.seconds_remaining().unwrap() > 3000);
@@ -720,6 +828,8 @@ mod tests {
             expires_in: Some(200),
             expires_at: Some(now + 200),
             token_type: "Bearer".to_string(),
+            account_email: None,
+            display_name: None,
         };
         assert!(expiring_token.is_expired());
 
@@ -730,6 +840,8 @@ mod tests {
             expires_in: Some(3600),
             expires_at: Some(now - 10),
             token_type: "Bearer".to_string(),
+            account_email: None,
+            display_name: None,
         };
         assert!(expired_token.is_expired());
         assert_eq!(expired_token.seconds_remaining(), Some(0));
@@ -743,6 +855,8 @@ mod tests {
             expires_in: Some(3600),
             expires_at: None,
             token_type: "Bearer".to_string(),
+            account_email: None,
+            display_name: None,
         }
         .with_computed_expiry();
 
@@ -758,6 +872,10 @@ mod tests {
         assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8085"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("scope="));
+        assert!(
+            url.contains("prompt=select_account+consent")
+                || url.contains("prompt=select_account%20consent")
+        );
     }
 
     #[test]
@@ -795,6 +913,8 @@ mod tests {
             expires_in: Some(3600),
             expires_at: Some(TokenData::current_timestamp_secs() + 3600),
             token_type: "Bearer".to_string(),
+            account_email: Some("alice@example.com".to_string()),
+            display_name: Some("Alice".to_string()),
         };
 
         let mut refreshed_response: TokenData = serde_json::from_str(
@@ -805,14 +925,24 @@ mod tests {
         if refreshed_response.refresh_token.is_none() {
             refreshed_response.refresh_token = initial_token.refresh_token.clone();
         }
+        if refreshed_response.account_email.is_none() {
+            refreshed_response.account_email = initial_token.account_email.clone();
+        }
+        if refreshed_response.display_name.is_none() {
+            refreshed_response.display_name = initial_token.display_name.clone();
+        }
 
         assert_eq!(refreshed_response.access_token, "new_access");
         assert_eq!(
             refreshed_response.refresh_token,
             Some("my_refresh_secret".to_string())
         );
+        assert_eq!(
+            refreshed_response.account_email.as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(refreshed_response.display_name.as_deref(), Some("Alice"));
     }
-
     #[tokio::test]
     async fn test_gdrive_client_token_accessor() {
         use crate::client::GDriveClient;
@@ -845,6 +975,11 @@ mod tests {
             .replace('\\', "/")
             .ends_with("profiles/test_env_work/token.json"));
 
+        let statuses = AuthManager::get_all_profiles_status().unwrap();
+        assert!(statuses
+            .iter()
+            .any(|p| p.name == "test_env_work" && p.is_active));
+
         std::env::set_var("GDRIVE_PROFILE", "../bad_path");
         assert!(AuthManager::token_path().is_err());
 
@@ -870,5 +1005,25 @@ mod tests {
         assert!(AuthManager::remove_profile("").is_err());
         assert!(AuthManager::remove_profile("   ").is_err());
         assert!(AuthManager::remove_profile("default").is_err());
+    }
+
+    #[test]
+    fn test_select_account_in_auth_url() {
+        let manager = AuthManager::new("test_client".to_string(), "test_secret".to_string());
+        let url = manager.build_auth_url("http://127.0.0.1:8085").unwrap();
+        assert!(
+            url.contains("prompt=select_account+consent")
+                || url.contains("prompt=select_account%20consent")
+        );
+    }
+
+    #[test]
+    fn test_profiles_status_scan() {
+        let statuses = AuthManager::get_all_profiles_status();
+        assert!(statuses.is_ok());
+        let list = statuses.unwrap();
+        assert!(!list.is_empty());
+        // Harus ada minimal profile default
+        assert!(list.iter().any(|p| p.name == "default"));
     }
 }
