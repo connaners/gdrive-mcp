@@ -39,8 +39,12 @@ jobs:
           command: cargo clippy --workspace --all-targets -- -D warnings
 
       - run:
-          name: Run Unit Tests
-          command: cargo test --workspace --verbose
+          name: Run Unit & Integration Tests
+          command: cargo test --workspace --all-targets --verbose
+
+      - run:
+          name: Run Installer Verification Suite
+          command: ./scripts/test_install.sh
 
       - save_cache:
           name: Save Cargo Cache

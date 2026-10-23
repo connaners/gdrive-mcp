@@ -11,9 +11,11 @@ path = "src/main.rs"
 [dependencies]
 gdrive-core.workspace = true
 gdrive-mcp.workspace = true
+gdrive-tui.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 comfy-table.workspace = true
+crossterm.workspace = true
 futures-util.workspace = true
 indicatif.workspace = true
 open.workspace = true
@@ -21,3 +23,9 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true

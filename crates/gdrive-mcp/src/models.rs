@@ -307,6 +307,13 @@ pub struct SelfUpdateArgs {
     pub restart: Option<bool>,
 }
 
+/// Parameter untuk tool gdrive_doctor
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunDoctorArgs {
+    /// Nama profil Google Drive yang ingin diperiksa (opsional, jika tidak diisi menggunakan profil aktif).
+    pub profile: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +379,6 @@ mod tests {
         assert_no_raw_bool::<ListProfilesArgs>();
         assert_no_raw_bool::<SwitchProfileArgs>();
         assert_no_raw_bool::<GetAboutArgs>();
+        assert_no_raw_bool::<RunDoctorArgs>();
     }
 }

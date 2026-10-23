@@ -1,8 +1,8 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use futures_util::StreamExt;
 use gdrive_core::{
@@ -26,7 +26,7 @@ struct Cli {
     pub profile: Option<String>,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -236,6 +236,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Buka Terminal User Interface (TUI) interaktif untuk navigasi Google Drive
+    #[command(name = "tui", alias = "ui")]
+    Tui {
+        /// ID folder awal yang ingin dibuka (opsional)
+        #[arg(short, long)]
+        folder: Option<String>,
+        /// Jalankan dalam mode demo interaktif dengan mock data tanpa perlu login Google
+        #[arg(long)]
+        demo: bool,
+    },
+    /// Jalankan pemeriksaan diagnostik lingkungan kerja, kredensial, konektivitas, dan terminal
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -355,7 +367,11 @@ enum AuthCommands {
         profile: Option<String>,
     },
     /// Jalankan interactive setup wizard untuk konfigurasi Google OAuth Client ID & Secret
-    Setup,
+    Setup {
+        /// Lewati browser otomatis & otorisasi OAuth langsung (hanya simpan credentials)
+        #[arg(long)]
+        skip_login: bool,
+    },
     /// Cek status token autentikasi yang tersimpan saat ini
     Status {
         /// Periksa status profile tertentu
@@ -399,13 +415,34 @@ enum McpCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Arahkan semua logging ke stderr agar stdout murni untuk JSON-RPC MCP
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_writer(std::io::stderr)
-        .init();
+    let cli_res = Cli::try_parse();
 
-    let cli = Cli::parse();
+    // Deteksi apakah sedang menjalankan mode TUI untuk mengalihkan tracing ke sink agar tidak mengotori alternate screen
+    let is_tui = match &cli_res {
+        Ok(cli) => match &cli.command {
+            Some(Commands::Tui { .. }) => true,
+            None => std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+            _ => false,
+        },
+        Err(_) => false,
+    };
+
+    if is_tui {
+        tracing_subscriber::fmt().with_writer(std::io::sink).init();
+    } else {
+        // Arahkan semua logging ke stderr agar stdout murni untuk JSON-RPC MCP
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+    }
+
+    let cli = match cli_res {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
 
     if let Err(err) = run(cli).await {
         eprintln!("❌ Error: {:#}", err);
@@ -550,6 +587,7 @@ async fn dispatch_collaboration_command(cmd: Commands) -> Result<()> {
             changelog,
             json,
         } => handle_self_update(check, changelog, json).await,
+        Commands::Doctor => handle_doctor().await,
         _ => unreachable!(),
     }
 }
@@ -562,7 +600,24 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    let cmd = match dispatch_file_mutation(cli.command).await? {
+    let cmd = match cli.command {
+        Some(c) => c,
+        None => {
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                return handle_tui(cli.profile, None, false).await;
+            } else {
+                Cli::command().print_help()?;
+                println!();
+                return Ok(());
+            }
+        }
+    };
+
+    if let Commands::Tui { folder, demo } = cmd {
+        return handle_tui(cli.profile, folder, demo).await;
+    }
+
+    let cmd = match dispatch_file_mutation(cmd).await? {
         Some(c) => c,
         None => return Ok(()),
     };
@@ -573,6 +628,30 @@ async fn run(cli: Cli) -> Result<()> {
     };
 
     dispatch_collaboration_command(cmd).await
+}
+
+async fn handle_tui(profile: Option<String>, folder: Option<String>, demo: bool) -> Result<()> {
+    gdrive_tui::run_tui(profile, folder, demo).await
+}
+
+async fn handle_doctor() -> Result<()> {
+    println!("\n=======================================================");
+    println!("        🩺 Google Drive MCP & CLI Doctor");
+    println!("=======================================================");
+
+    let is_term = std::io::stdout().is_terminal();
+    let term_size = crossterm::terminal::size().ok();
+    let terminal_info = Some((is_term, term_size));
+
+    let report = gdrive_core::run_doctor_checks(None, terminal_info).await;
+
+    println!("{}", format::render_doctor_table(&report));
+    println!(
+        "\nHasil Pemeriksaan: {} OK, {} Warning, {} Failure\n",
+        report.ok_count, report.warn_count, report.fail_count
+    );
+
+    Ok(())
 }
 
 async fn handle_auth_login(no_browser: bool, profile: Option<String>) -> Result<()> {
@@ -594,7 +673,7 @@ async fn handle_auth_login(no_browser: bool, profile: Option<String>) -> Result<
                 || trimmed.eq_ignore_ascii_case("y")
                 || trimmed.eq_ignore_ascii_case("yes")
             {
-                handle_setup().await?;
+                handle_setup(false).await?;
                 return Ok(());
             } else {
                 return Err(err);
@@ -697,14 +776,14 @@ async fn handle_auth(action: AuthCommands) -> Result<()> {
             no_browser,
             profile,
         } => handle_auth_login(no_browser, profile).await,
-        AuthCommands::Setup => handle_setup().await,
+        AuthCommands::Setup { skip_login } => handle_setup(skip_login).await,
         AuthCommands::Status { profile } => handle_auth_status(profile),
         AuthCommands::Logout { profile } => handle_auth_logout(profile),
         AuthCommands::Profile { action } => handle_auth_profile(action),
     }
 }
 
-async fn handle_setup() -> Result<()> {
+async fn handle_setup(skip_login: bool) -> Result<()> {
     use std::io::Write;
 
     eprintln!("\n=======================================================");
@@ -713,64 +792,68 @@ async fn handle_setup() -> Result<()> {
     eprintln!("Wizard ini akan memandu Anda menyiapkan Google OAuth credentials");
     eprintln!("agar gdrive-mcp dapat terhubung dengan aman ke akun Google Drive Anda.\n");
 
-    // Langkah 1: Enable Google Drive API
-    let api_url = "https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com";
-    eprintln!("📍 LANGKAH 1: Aktifkan Google Drive API");
-    eprintln!("   Link: {}", api_url);
-    eprintln!("   Checklist:");
-    eprintln!("   [ ] Pilih atau buat Google Cloud Project (bebas)");
-    eprintln!("   [ ] Klik tombol 'Enable' / 'Aktifkan'\n");
-    eprint!("   Buka link Langkah 1 di browser sekarang? [Y/n]: ");
-    std::io::stderr().flush()?;
-    let mut ans1 = String::new();
-    std::io::stdin().read_line(&mut ans1)?;
-    if ans1.trim().is_empty()
-        || ans1.trim().eq_ignore_ascii_case("y")
-        || ans1.trim().eq_ignore_ascii_case("yes")
-    {
-        let _ = open::that(api_url);
-    }
+    if !skip_login {
+        // Langkah 1: Enable Google Drive API
+        let api_url = "https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com";
+        eprintln!("📍 LANGKAH 1: Aktifkan Google Drive API");
+        eprintln!("   Link: {}", api_url);
+        eprintln!("   Checklist:");
+        eprintln!("   [ ] Pilih atau buat Google Cloud Project (bebas)");
+        eprintln!("   [ ] Klik tombol 'Enable' / 'Aktifkan'\n");
+        eprint!("   Buka link Langkah 1 di browser sekarang? [Y/n]: ");
+        std::io::stderr().flush()?;
+        let mut ans1 = String::new();
+        std::io::stdin().read_line(&mut ans1)?;
+        if ans1.trim().is_empty()
+            || ans1.trim().eq_ignore_ascii_case("y")
+            || ans1.trim().eq_ignore_ascii_case("yes")
+        {
+            let _ = open::that(api_url);
+        }
 
-    // Langkah 2: OAuth Consent Screen & Test Users
-    let consent_url = "https://console.cloud.google.com/apis/credentials/consent";
-    eprintln!("\n-------------------------------------------------------");
-    eprintln!("📍 LANGKAH 2: Konfigurasi OAuth Consent Screen & Test Users");
-    eprintln!("   Link: {}", consent_url);
-    eprintln!("   Checklist:");
-    eprintln!("   [ ] User Type: Pilih 'External' lalu klik Create");
-    eprintln!("   [ ] Isi App Name: 'gdrive-cli' & email support Anda");
-    eprintln!("   [ ] Pada tab 'Test Users': TAMBAHKAN EMAIL GOOGLE ANDA (Wajib)");
-    eprintln!("   ℹ️  Tips: Peringatan 'Google hasn't verified this app' saat login");
-    eprintln!("       adalah normal untuk project pribadi (klik Advanced > Go to gdrive-cli).\n");
-    eprint!("   Buka link Langkah 2 di browser sekarang? [Y/n]: ");
-    std::io::stderr().flush()?;
-    let mut ans2 = String::new();
-    std::io::stdin().read_line(&mut ans2)?;
-    if ans2.trim().is_empty()
-        || ans2.trim().eq_ignore_ascii_case("y")
-        || ans2.trim().eq_ignore_ascii_case("yes")
-    {
-        let _ = open::that(consent_url);
-    }
+        // Langkah 2: OAuth Consent Screen & Test Users
+        let consent_url = "https://console.cloud.google.com/apis/credentials/consent";
+        eprintln!("\n-------------------------------------------------------");
+        eprintln!("📍 LANGKAH 2: Konfigurasi OAuth Consent Screen & Test Users");
+        eprintln!("   Link: {}", consent_url);
+        eprintln!("   Checklist:");
+        eprintln!("   [ ] User Type: Pilih 'External' lalu klik Create");
+        eprintln!("   [ ] Isi App Name: 'gdrive-cli' & email support Anda");
+        eprintln!("   [ ] Pada tab 'Test Users': TAMBAHKAN EMAIL GOOGLE ANDA (Wajib)");
+        eprintln!("   ℹ️  Tips: Peringatan 'Google hasn't verified this app' saat login");
+        eprintln!(
+            "       adalah normal untuk project pribadi (klik Advanced > Go to gdrive-cli).\n"
+        );
+        eprint!("   Buka link Langkah 2 di browser sekarang? [Y/n]: ");
+        std::io::stderr().flush()?;
+        let mut ans2 = String::new();
+        std::io::stdin().read_line(&mut ans2)?;
+        if ans2.trim().is_empty()
+            || ans2.trim().eq_ignore_ascii_case("y")
+            || ans2.trim().eq_ignore_ascii_case("yes")
+        {
+            let _ = open::that(consent_url);
+        }
 
-    // Langkah 3: Buat OAuth Client ID (Desktop App)
-    let cred_url = "https://console.cloud.google.com/apis/credentials/oauthclient";
-    eprintln!("\n-------------------------------------------------------");
-    eprintln!("📍 LANGKAH 3: Buat OAuth Client ID (Desktop App)");
-    eprintln!("   Link: {}", cred_url);
-    eprintln!("   Checklist:");
-    eprintln!("   [ ] Application type: Pilih 'Desktop App'");
-    eprintln!("   [ ] Name: 'gdrive-cli' (bebas)");
-    eprintln!("   [ ] Klik tombol 'Create'\n");
-    eprint!("   Buka link Langkah 3 di browser sekarang? [Y/n]: ");
-    std::io::stderr().flush()?;
-    let mut ans3 = String::new();
-    std::io::stdin().read_line(&mut ans3)?;
-    if ans3.trim().is_empty()
-        || ans3.trim().eq_ignore_ascii_case("y")
-        || ans3.trim().eq_ignore_ascii_case("yes")
-    {
-        let _ = open::that(cred_url);
+        // Langkah 3: Buat OAuth Client ID (Desktop App)
+        let cred_url = "https://console.cloud.google.com/apis/credentials/oauthclient";
+        eprintln!("\n-------------------------------------------------------");
+        eprintln!("📍 LANGKAH 3: Buat OAuth Client ID (Desktop App)");
+        eprintln!("   Link: {}", cred_url);
+        eprintln!("   Checklist:");
+        eprintln!("   [ ] Application type: Pilih 'Desktop App'");
+        eprintln!("   [ ] Name: 'gdrive-cli' (bebas)");
+        eprintln!("   [ ] Klik tombol 'Create'\n");
+        eprint!("   Buka link Langkah 3 di browser sekarang? [Y/n]: ");
+        std::io::stderr().flush()?;
+        let mut ans3 = String::new();
+        std::io::stdin().read_line(&mut ans3)?;
+        if ans3.trim().is_empty()
+            || ans3.trim().eq_ignore_ascii_case("y")
+            || ans3.trim().eq_ignore_ascii_case("yes")
+        {
+            let _ = open::that(cred_url);
+        }
     }
 
     // Langkah 4: Masukkan Client ID & Secret
@@ -782,7 +865,10 @@ async fn handle_setup() -> Result<()> {
         eprint!("👉 Masukkan Client ID: ");
         std::io::stderr().flush()?;
         client_id.clear();
-        std::io::stdin().read_line(&mut client_id)?;
+        let bytes_read = std::io::stdin().read_line(&mut client_id)?;
+        if bytes_read == 0 {
+            bail!("Input stream berakhir sebelum Client ID dimasukkan");
+        }
         let trimmed = client_id.trim();
         if !trimmed.is_empty() {
             client_id = trimmed.to_string();
@@ -796,7 +882,10 @@ async fn handle_setup() -> Result<()> {
         eprint!("👉 Masukkan Client Secret: ");
         std::io::stderr().flush()?;
         client_secret.clear();
-        std::io::stdin().read_line(&mut client_secret)?;
+        let bytes_read = std::io::stdin().read_line(&mut client_secret)?;
+        if bytes_read == 0 {
+            bail!("Input stream berakhir sebelum Client Secret dimasukkan");
+        }
         let trimmed = client_secret.trim();
         if !trimmed.is_empty() {
             client_secret = trimmed.to_string();
@@ -808,6 +897,10 @@ async fn handle_setup() -> Result<()> {
     // Simpan credentials
     let saved_path = AuthManager::save_credentials(&client_id, &client_secret)?;
     eprintln!("\n✅ Credentials berhasil disimpan di: {:?}", saved_path);
+
+    if skip_login {
+        return Ok(());
+    }
 
     // Langsung lanjut proses otorisasi login Google
     eprintln!("\nMelanjutkan langsung ke proses otorisasi login Google...");
@@ -1593,7 +1686,7 @@ mod tests {
     #[test]
     fn test_search_multi_word_unquoted() {
         let cli = Cli::try_parse_from(["gdrive", "search", "iboss", "v2"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Search { query, .. } => {
                 assert_eq!(query, vec!["iboss", "v2"]);
             }
@@ -1604,7 +1697,7 @@ mod tests {
     #[test]
     fn test_search_single_quoted_word() {
         let cli = Cli::try_parse_from(["gdrive", "search", "iboss v2"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Search { query, .. } => {
                 assert_eq!(query, vec!["iboss v2"]);
             }
@@ -1615,7 +1708,7 @@ mod tests {
     #[test]
     fn test_search_empty_query_with_flags() {
         let cli = Cli::try_parse_from(["gdrive", "search", "--folder", "root"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Search { query, folder, .. } => {
                 assert!(query.is_empty());
                 assert_eq!(folder.as_deref(), Some("root"));
@@ -1627,7 +1720,7 @@ mod tests {
     #[test]
     fn test_info_command_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "info", "file_123", "--json"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Info { file_id, json } => {
                 assert_eq!(file_id, "file_123");
                 assert!(json);
@@ -1648,7 +1741,7 @@ mod tests {
             "folder_456",
         ])
         .unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Copy {
                 file_id,
                 name,
@@ -1680,7 +1773,7 @@ mod tests {
             "--json",
         ])
         .unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Share {
                 file_id,
                 role,
@@ -1704,7 +1797,7 @@ mod tests {
     #[test]
     fn test_share_command_defaults() {
         let cli = Cli::try_parse_from(["gdrive", "share", "file_123"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Share {
                 file_id,
                 role,
@@ -1730,7 +1823,7 @@ mod tests {
     fn test_permissions_list_parsing() {
         let cli =
             Cli::try_parse_from(["gdrive", "permissions", "list", "file_123", "--json"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Permissions {
                 action: PermissionsCommands::List { file_id, json },
             } => {
@@ -1745,7 +1838,7 @@ mod tests {
     fn test_permissions_revoke_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "permissions", "revoke", "file_123", "perm_456"])
             .unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Permissions {
                 action:
                     PermissionsCommands::Revoke {
@@ -1764,7 +1857,7 @@ mod tests {
     fn test_comments_list_parsing() {
         let cli =
             Cli::try_parse_from(["gdrive", "comments", "list", "file_123", "--json"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Comments {
                 action:
                     CommentsCommands::List {
@@ -1785,7 +1878,7 @@ mod tests {
     fn test_comments_add_parsing() {
         let cli =
             Cli::try_parse_from(["gdrive", "comments", "add", "file_123", "Nice work!"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Comments {
                 action:
                     CommentsCommands::Add {
@@ -1806,7 +1899,7 @@ mod tests {
     fn test_comments_resolve_parsing() {
         let cli =
             Cli::try_parse_from(["gdrive", "comments", "resolve", "file_123", "comm_456"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Comments {
                 action:
                     CommentsCommands::Resolve {
@@ -1824,7 +1917,7 @@ mod tests {
     #[test]
     fn test_trash_shortcut_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "trash", "file_abc"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Trash { action, file_id } => {
                 assert!(action.is_none());
                 assert_eq!(file_id.as_deref(), Some("file_abc"));
@@ -1836,7 +1929,7 @@ mod tests {
     #[test]
     fn test_trash_subcommands_parsing() {
         let cli_list = Cli::try_parse_from(["gdrive", "trash", "list", "--json"]).unwrap();
-        match cli_list.command {
+        match cli_list.command.unwrap() {
             Commands::Trash { action, file_id } => {
                 assert!(file_id.is_none());
                 match action.unwrap() {
@@ -1851,7 +1944,7 @@ mod tests {
         }
 
         let cli_restore = Cli::try_parse_from(["gdrive", "trash", "restore", "file_xyz"]).unwrap();
-        match cli_restore.command {
+        match cli_restore.command.unwrap() {
             Commands::Trash { action, file_id } => {
                 assert!(file_id.is_none());
                 match action.unwrap() {
@@ -1865,7 +1958,7 @@ mod tests {
         }
 
         let cli_empty = Cli::try_parse_from(["gdrive", "trash", "empty", "--yes"]).unwrap();
-        match cli_empty.command {
+        match cli_empty.command.unwrap() {
             Commands::Trash { action, file_id } => {
                 assert!(file_id.is_none());
                 match action.unwrap() {
@@ -1883,7 +1976,7 @@ mod tests {
     fn test_revisions_list_parsing() {
         let cli =
             Cli::try_parse_from(["gdrive", "revisions", "list", "file_123", "--json"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Revisions {
                 action: RevisionsCommands::List { file_id, json },
             } => {
@@ -1906,7 +1999,7 @@ mod tests {
             "out.pdf",
         ])
         .unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Revisions {
                 action:
                     RevisionsCommands::Download {
@@ -1927,7 +2020,7 @@ mod tests {
     fn test_global_profile_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "--profile", "work", "info", "file_123"]).unwrap();
         assert_eq!(cli.profile.as_deref(), Some("work"));
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Info { file_id, .. } => {
                 assert_eq!(file_id, "file_123");
             }
@@ -1938,7 +2031,7 @@ mod tests {
     #[test]
     fn test_auth_profile_subcommands_parsing() {
         let cli_list = Cli::try_parse_from(["gdrive", "auth", "profile", "list"]).unwrap();
-        match cli_list.command {
+        match cli_list.command.unwrap() {
             Commands::Auth {
                 action: AuthCommands::Profile { action },
             } => match action {
@@ -1950,7 +2043,7 @@ mod tests {
 
         let cli_switch =
             Cli::try_parse_from(["gdrive", "auth", "profile", "switch", "work"]).unwrap();
-        match cli_switch.command {
+        match cli_switch.command.unwrap() {
             Commands::Auth {
                 action: AuthCommands::Profile { action },
             } => match action {
@@ -1964,7 +2057,7 @@ mod tests {
 
         let cli_remove =
             Cli::try_parse_from(["gdrive", "auth", "profile", "remove", "work"]).unwrap();
-        match cli_remove.command {
+        match cli_remove.command.unwrap() {
             Commands::Auth {
                 action: AuthCommands::Profile { action },
             } => match action {
@@ -1980,7 +2073,7 @@ mod tests {
     #[test]
     fn test_self_update_check_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "self-update", "--check", "--json"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::SelfUpdate {
                 check,
                 changelog,
@@ -1997,7 +2090,7 @@ mod tests {
     #[test]
     fn test_self_update_upgrade_alias_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "upgrade", "--changelog"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::SelfUpdate {
                 check,
                 changelog,
@@ -2008,6 +2101,34 @@ mod tests {
                 assert!(!json);
             }
             _ => panic!("Expected SelfUpdate command via upgrade alias"),
+        }
+    }
+    #[test]
+    fn test_zero_args_parsing() {
+        let cli = Cli::try_parse_from(["gdrive"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(cli.profile.is_none());
+    }
+
+    #[test]
+    fn test_tui_command_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "tui"]).unwrap();
+        match cli.command.unwrap() {
+            Commands::Tui { folder, demo } => {
+                assert!(folder.is_none());
+                assert!(!demo);
+            }
+            _ => panic!("Expected Tui command"),
+        }
+
+        let cli_alias =
+            Cli::try_parse_from(["gdrive", "ui", "--folder", "folder_xyz", "--demo"]).unwrap();
+        match cli_alias.command.unwrap() {
+            Commands::Tui { folder, demo } => {
+                assert_eq!(folder.as_deref(), Some("folder_xyz"));
+                assert!(demo);
+            }
+            _ => panic!("Expected Tui command via ui alias"),
         }
     }
 }

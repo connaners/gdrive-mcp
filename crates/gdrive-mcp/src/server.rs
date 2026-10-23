@@ -18,8 +18,9 @@ use crate::models::{
     DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetAboutArgs, GetFileInfoArgs,
     GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs,
     ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs, MoveFileArgs,
-    ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, SearchFilesArgs,
-    SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs, UpdateFileArgs,
+    ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
+    SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs,
+    UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -177,7 +178,8 @@ impl ServerHandler for GDriveMcpServer {
             Use gdrive_list_revisions to view previous versions of a file. \
             Use gdrive_get_revision to inspect or retrieve content from a specific past revision. \
             Use gdrive_check_update to check for new releases and updates of gdrive-mcp from GitHub. \
-            Use gdrive_self_update to automatically update the gdrive binary to the latest release.",
+            Use gdrive_self_update to automatically update the gdrive binary to the latest release. \
+            Use gdrive_doctor to run health checks on config directory, credentials, token, and API connectivity.",
         )
     }
 }
@@ -993,6 +995,21 @@ impl GDriveMcpServer {
                 "binary_path": success.binary_path,
                 "restarting": restarting
             }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_doctor",
+        description = "Pemeriksaan diagnostik kesehatan sistem gdrive-mcp: direktori config, kredensial OAuth, validitas token profil, dan konektivitas API Google Drive."
+    )]
+    pub async fn gdrive_doctor(
+        &self,
+        Parameters(args): Parameters<RunDoctorArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let report = gdrive_core::run_doctor_checks(args.profile.as_deref(), None).await;
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(report)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
         }))
     }
 }

@@ -120,6 +120,12 @@ impl AuthManager {
 
     /// Daftar direktori config yang dicek (termasuk ~/.config/gdrive-mcp sebagai fallback)
     pub fn get_possible_config_dirs() -> Vec<PathBuf> {
+        if let Ok(dir) = std::env::var("GDRIVE_CONFIG_DIR") {
+            let trimmed = dir.trim();
+            if !trimmed.is_empty() {
+                return vec![PathBuf::from(trimmed)];
+            }
+        }
         let mut paths = Vec::new();
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join(".config").join("gdrive-mcp"));
@@ -536,6 +542,39 @@ impl AuthManager {
         std::fs::write(&path, serde_json::to_string_pretty(&json_content)?)?;
         Ok(path)
     }
+    pub fn parse_credentials_json(content: &str) -> Result<OAuthCredentials> {
+        let v: serde_json::Value = serde_json::from_str(content)?;
+        let id = v
+            .get("installed")
+            .and_then(|inst| inst.get("client_id"))
+            .or_else(|| v.get("web").and_then(|web| web.get("client_id")))
+            .or_else(|| v.get("client_id"))
+            .and_then(|s| s.as_str())
+            .map(str::trim);
+        let secret = v
+            .get("installed")
+            .and_then(|inst| inst.get("client_secret"))
+            .or_else(|| v.get("web").and_then(|web| web.get("client_secret")))
+            .or_else(|| v.get("client_secret"))
+            .and_then(|s| s.as_str())
+            .map(str::trim);
+
+        if let (Some(id), Some(secret)) = (id, secret) {
+            if !id.is_empty() && !secret.is_empty() {
+                return Ok(OAuthCredentials {
+                    client_id: id.to_string(),
+                    client_secret: secret.to_string(),
+                });
+            }
+        }
+        anyhow::bail!("Format credentials.json tidak valid: client_id atau client_secret tidak ditemukan atau kosong.");
+    }
+
+    pub fn save_credentials_from_file(path: &std::path::Path) -> Result<PathBuf> {
+        let content = std::fs::read_to_string(path)?;
+        let creds = Self::parse_credentials_json(&content)?;
+        Self::save_credentials(&creds.client_id, &creds.client_secret)
+    }
 
     /// Menentukan path file token default (~/.config/gdrive-mcp/token.json)
     pub fn default_token_path() -> Result<PathBuf> {
@@ -703,6 +742,113 @@ impl AuthManager {
         self.login_for_profile(None, no_browser).await
     }
 
+    /// Eksekusi login loopback tanpa interaksi stdin/eprintln (untuk TUI / background headless)
+    pub async fn login_loopback_silent(
+        &self,
+        profile: Option<&str>,
+        on_auth_url: tokio::sync::oneshot::Sender<String>,
+    ) -> Result<TokenData> {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:8085").await {
+            Ok(l) => l,
+            Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+        };
+
+        let port = listener.local_addr()?.port();
+        let redirect_uri = format!("http://127.0.0.1:{}", port);
+        let auth_url = self.build_auth_url(&redirect_uri)?;
+
+        let _ = on_auth_url.send(auth_url);
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
+        tokio::pin!(timeout);
+
+        let code = loop {
+            tokio::select! {
+                incoming = listener.accept() => {
+                    let (mut stream, _) = match incoming {
+                        Ok(conn) => conn,
+                        Err(_) => continue,
+                    };
+                    let mut buf = [0u8; 4096];
+                    let n = match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        stream.read(&mut buf),
+                    )
+                    .await
+                    {
+                        Ok(Ok(n)) if n > 0 => n,
+                        _ => continue,
+                    };
+                    let req_text = String::from_utf8_lossy(&buf[..n]);
+
+                    if let Some(code) = Self::parse_code_from_http_request(&req_text) {
+                        let body = "<!DOCTYPE html><html><body style=\"font-family:sans-serif;text-align:center;padding:50px;\">\
+                         <h2 style=\"color:#2e7d32;\">Login Berhasil!</h2>\
+                         <p>Autentikasi Google Drive MCP berhasil. Anda dapat menutup tab ini dan kembali ke aplikasi.</p>\
+                         </body></html>";
+
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+
+                        let _ = stream.write_all(response.as_bytes()).await;
+                        let _ = stream.flush().await;
+                        break code;
+                    } else if req_text.contains("error=") {
+                        let body = "<!DOCTYPE html><html><body style=\"font-family:sans-serif;text-align:center;padding:50px;\">\
+                         <h2 style=\"color:#c62828;\">Login Dibatalkan</h2>\
+                         <p>Akses Google Drive ditolak atau dibatalkan oleh pengguna.</p>\
+                         </body></html>";
+                        let response = format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes()).await;
+                        let _ = stream.flush().await;
+                        anyhow::bail!("Otorisasi Google Drive dibatalkan atau ditolak di browser");
+                    } else {
+                        let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes()).await;
+                        let _ = stream.flush().await;
+                    }
+                }
+                _ = &mut timeout => {
+                    anyhow::bail!("Timeout menunggu otorisasi dari browser (120 detik).");
+                }
+            }
+        };
+
+        let mut token = self.exchange_code(&code, &redirect_uri).await?;
+
+        let about_url = format!("{}/about?fields=user", crate::client::drive_api_base());
+        if let Ok(about_resp) = reqwest::Client::new()
+            .get(&about_url)
+            .bearer_auth(&token.access_token)
+            .send()
+            .await
+        {
+            if about_resp.status().is_success() {
+                if let Ok(about_data) = about_resp.json::<crate::models::DriveAbout>().await {
+                    if let Some(user) = about_data.user {
+                        token.account_email = user.email_address;
+                        token.display_name = user.display_name;
+                    }
+                }
+            }
+        }
+
+        Self::save_token_for_profile(profile, &token)?;
+        if let Some(p) = profile {
+            let _ = Self::set_active_profile(p);
+        }
+
+        Ok(token)
+    }
     /// Tukarkan authorization code menjadi access token & refresh token
     pub async fn exchange_code(&self, code: &str, redirect_uri: &str) -> Result<TokenData> {
         let client = reqwest::Client::new();
@@ -1025,5 +1171,31 @@ mod tests {
         assert!(!list.is_empty());
         // Harus ada minimal profile default
         assert!(list.iter().any(|p| p.name == "default"));
+    }
+    #[test]
+    fn test_parse_credentials_json_formats() {
+        // Standard installed desktop
+        let installed_json = r#"{"installed":{"client_id":"id1","client_secret":"sec1"}}"#;
+        let creds1 = AuthManager::parse_credentials_json(installed_json).unwrap();
+        assert_eq!(creds1.client_id, "id1");
+        assert_eq!(creds1.client_secret, "sec1");
+
+        // Web client format
+        let web_json = r#"{"web":{"client_id":"id2","client_secret":"sec2"}}"#;
+        let creds2 = AuthManager::parse_credentials_json(web_json).unwrap();
+        assert_eq!(creds2.client_id, "id2");
+        assert_eq!(creds2.client_secret, "sec2");
+
+        // Mixed with empty installed object and valid web
+        let mixed_json = r#"{"installed":{},"web":{"client_id":"id3","client_secret":"sec3"}}"#;
+        let creds3 = AuthManager::parse_credentials_json(mixed_json).unwrap();
+        assert_eq!(creds3.client_id, "id3");
+        assert_eq!(creds3.client_secret, "sec3");
+
+        // Invalid empty
+        assert!(AuthManager::parse_credentials_json(
+            r#"{"installed":{"client_id":"","client_secret":""}}"#
+        )
+        .is_err());
     }
 }
