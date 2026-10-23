@@ -7,14 +7,14 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 authors = ["connaners"]
 
 [workspace.dependencies]
-gdrive-core = { path = "crates/gdrive-core", version = "0.3.1" }
-gdrive-mcp = { path = "crates/gdrive-mcp", version = "0.3.1" }
+gdrive-core = { path = "crates/gdrive-core", version = "0.4.0" }
+gdrive-mcp = { path = "crates/gdrive-mcp", version = "0.4.0" }
 
 anyhow = "1"
 bytes = "1"
