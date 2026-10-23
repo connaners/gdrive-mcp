@@ -226,6 +226,20 @@ pub struct GetRevisionArgs {
     pub revision_id: String,
 }
 
+/// Parameter untuk tool gdrive_check_update
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckUpdateArgs {
+    /// Tampilkan catatan rilis (changelog / release notes) lengkap dari versi terbaru jika tersedia (default: false).
+    pub include_changelog: Option<bool>,
+}
+
+/// Parameter untuk tool gdrive_self_update
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SelfUpdateArgs {
+    /// Jika true, proses MCP server akan keluar secara graceful (exit code 0) sesaat setelah pembaruan selesai agar host dapat me-restart proses dengan binary baru. Jika false (default: false), proses tetap berjalan dan dapat di-restart manual.
+    pub restart: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +300,7 @@ mod tests {
         assert_no_raw_bool::<EmptyTrashArgs>();
         assert_no_raw_bool::<ListRevisionsArgs>();
         assert_no_raw_bool::<GetRevisionArgs>();
+        assert_no_raw_bool::<CheckUpdateArgs>();
+        assert_no_raw_bool::<SelfUpdateArgs>();
     }
 }
