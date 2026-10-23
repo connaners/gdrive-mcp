@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "gdrive-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "gdrive-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "gdrive-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "futures-util",

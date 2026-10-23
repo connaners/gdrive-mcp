@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures_util::StreamExt;
-use gdrive_core::{CreateFileOptions, GDriveClient, UpdateFileOptions};
+use gdrive_core::{CreateFileOptions, CreatePermissionOptions, GDriveClient, UpdateFileOptions};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerInfo},
@@ -14,8 +14,11 @@ use serde_json::Value;
 use std::io::Write;
 
 use crate::models::{
-    CreateFileArgs, CreateFolderArgs, DownloadFileArgs, ListDrivesArgs, ListFolderArgs,
-    MoveFileArgs, ReadFileArgs, RenameFileArgs, SearchFilesArgs, TrashFileArgs, UpdateFileArgs,
+    AddCommentArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs, DeletePermissionArgs,
+    DownloadFileArgs, EmptyTrashArgs, GetFileInfoArgs, GetRevisionArgs, GetShareableLinkArgs,
+    ListCommentsArgs, ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListRevisionsArgs,
+    ListTrashArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs,
+    SearchFilesArgs, ShareFileArgs, TrashFileArgs, UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -55,8 +58,9 @@ async fn write_chunks_to_part_file(
 
 async fn resolve_mcp_target(
     client: &GDriveClient,
-    target: &str,
+    raw_target: &str,
 ) -> std::result::Result<String, ErrorData> {
+    let target = GDriveClient::clean_file_id(raw_target);
     if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
         if let Ok(meta) = client.get_file_metadata(target).await {
             return Ok(meta.id);
@@ -92,14 +96,17 @@ impl GDriveMcpServer {
             tool_router: Self::tool_router(),
         }
     }
-
-    async fn client() -> Result<GDriveClient, ErrorData> {
-        GDriveClient::from_saved_token().await.map_err(|e| {
+    pub async fn client_for_profile(profile: Option<&str>) -> Result<GDriveClient, ErrorData> {
+        GDriveClient::from_profile(profile).await.map_err(|e| {
             ErrorData::internal_error(
                 format!("Auth error: {e}. Jalankan 'gdrive auth login' terlebih dahulu."),
                 None,
             )
         })
+    }
+
+    async fn client() -> Result<GDriveClient, ErrorData> {
+        Self::client_for_profile(None).await
     }
 }
 
@@ -120,14 +127,28 @@ impl ServerHandler for GDriveMcpServer {
         .with_instructions(
             "Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, and pagination. \
             Use gdrive_read_file to read document contents (auto-converts Google Docs to markdown, Sheets to CSV, Slides to text). \
+            Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date) without reading full contents. \
             Use gdrive_create_file to write or upload documents, with optional conversion to native Google Docs. \
             Use gdrive_update_file to modify or append content to existing files. \
+            Use gdrive_copy_file to duplicate files with optional new name or destination folder. \
             Use gdrive_create_folder to create directories. \
             Use gdrive_rename_file to rename a file or folder. \
             Use gdrive_move_file to move a file or folder to a target folder. \
             Use gdrive_trash_file to safely move files or folders to trash. \
             Use gdrive_list_drives to list accessible Shared Drives. \
-            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name.",
+            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name. \
+            Use gdrive_list_permissions to view who has access to a file or folder. \
+            Use gdrive_share_file to share a file or folder with users, groups, domains, or anyone with link. \
+            Use gdrive_delete_permission to revoke access for a specific permission ID. \
+            Use gdrive_get_shareable_link to get the web view link with optional automatic public sharing. \
+            Use gdrive_list_comments to view comments and discussions on a document. \
+            Use gdrive_add_comment to add feedback or review comments to a file. \
+            Use gdrive_resolve_comment to mark a comment as resolved. \
+            Use gdrive_list_trash to view items in the trash. \
+            Use gdrive_restore_file to recover/untrash a file. \
+            Use gdrive_empty_trash to permanently empty the trash bin. \
+            Use gdrive_list_revisions to view previous versions of a file. \
+            Use gdrive_get_revision to inspect or retrieve content from a specific past revision.",
         )
     }
 }
@@ -458,6 +479,372 @@ impl GDriveMcpServer {
                 "size_bytes": downloaded_bytes,
                 "mime_type": mime_type,
                 "status": "success"
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_copy_file",
+        description = "Menyalin (duplicate) file di Google Drive dengan opsi nama baru dan folder tujuan baru."
+    )]
+    pub async fn gdrive_copy_file(
+        &self,
+        Parameters(args): Parameters<CopyFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let copied = client
+            .copy_file(
+                &args.file_id,
+                args.new_name.as_deref(),
+                args.parent_folder_id.as_deref(),
+            )
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(copied)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_file_info",
+        description = "Melihat metadata lengkap file atau folder (ID, nama, tipe mime, ukuran file, tanggal modifikasi, link web, dan parent folder) tanpa perlu membaca seluruh isinya."
+    )]
+    pub async fn gdrive_get_file_info(
+        &self,
+        Parameters(args): Parameters<GetFileInfoArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let meta = client
+            .get_file_metadata(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(meta)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_permissions",
+        description = "Melihat daftar pengguna, grup, domain, atau publik yang memiliki akses (permissions) ke suatu file atau folder di Google Drive."
+    )]
+    pub async fn gdrive_list_permissions(
+        &self,
+        Parameters(args): Parameters<ListPermissionsArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let perms = client
+            .list_permissions(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(perms)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_share_file",
+        description = "Membagikan file atau folder di Google Drive ke pengguna, grup, domain, atau publik dengan hak akses tertentu ('reader', 'commenter', 'writer', atau 'fileOrganizer')."
+    )]
+    pub async fn gdrive_share_file(
+        &self,
+        Parameters(args): Parameters<ShareFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let permission_type = if args.permission_type == "anyone"
+            && args
+                .email_address
+                .as_deref()
+                .map(|e| !e.trim().is_empty())
+                .unwrap_or(false)
+        {
+            "user".to_string()
+        } else {
+            args.permission_type
+        };
+
+        if (permission_type == "user" || permission_type == "group")
+            && args
+                .email_address
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+        {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "Parameter 'email_address' wajib diisi jika permission_type adalah '{}'.",
+                    permission_type
+                ),
+                None,
+            ));
+        }
+        if permission_type == "domain" && args.domain.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "Parameter 'domain' wajib diisi jika permission_type adalah 'domain'.",
+                None,
+            ));
+        }
+
+        let opts = CreatePermissionOptions {
+            role: args.role,
+            permission_type,
+            email_address: args.email_address,
+            domain: args.domain,
+            send_notification_email: args.send_notification.unwrap_or(false),
+        };
+
+        let perm = client
+            .create_permission(&file_id, opts)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(perm)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_delete_permission",
+        description = "Menghapus hak akses (permission) dari suatu file atau folder di Google Drive."
+    )]
+    pub async fn gdrive_delete_permission(
+        &self,
+        Parameters(args): Parameters<DeletePermissionArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+
+        client
+            .delete_permission(&file_id, &args.permission_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "permission_id": args.permission_id,
+                "status": "revoked"
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_shareable_link",
+        description = "Mendapatkan tautan Google Drive (shareable link) untuk file atau folder, dengan opsi membuatnya publik secara otomatis."
+    )]
+    pub async fn gdrive_get_shareable_link(
+        &self,
+        Parameters(args): Parameters<GetShareableLinkArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let make_public = args.make_public.unwrap_or(false);
+
+        let link = client
+            .get_shareable_link(&file_id, make_public)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "shareable_link": link,
+                "public": make_public
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_comments",
+        description = "Melihat daftar komentar pada suatu file di Google Drive (termasuk status resolved dan data author)."
+    )]
+    pub async fn gdrive_list_comments(
+        &self,
+        Parameters(args): Parameters<ListCommentsArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let comments = client
+            .list_comments(&file_id, args.page_size)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(comments)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_add_comment",
+        description = "Menambahkan komentar baru atau feedback pada file Google Drive."
+    )]
+    pub async fn gdrive_add_comment(
+        &self,
+        Parameters(args): Parameters<AddCommentArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let comment = client
+            .create_comment(&file_id, &args.content)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(comment)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_resolve_comment",
+        description = "Menandai komentar pada file Google Drive sebagai terselesaikan (resolved)."
+    )]
+    pub async fn gdrive_resolve_comment(
+        &self,
+        Parameters(args): Parameters<ResolveCommentArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let comment = client
+            .resolve_comment(&file_id, &args.comment_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(comment)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_trash",
+        description = "Melihat daftar file dan folder yang berada di tempat sampah Google Drive."
+    )]
+    pub async fn gdrive_list_trash(
+        &self,
+        Parameters(args): Parameters<ListTrashArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let res = client
+            .list_trash(args.page_size, args.page_token.as_deref())
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(res)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_restore_file",
+        description = "Memulihkan file atau folder dari tempat sampah Google Drive (untrash)."
+    )]
+    pub async fn gdrive_restore_file(
+        &self,
+        Parameters(args): Parameters<RestoreFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let restored = client
+            .restore_trash_file(&args.file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(restored)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_empty_trash",
+        description = "Mengosongkan tempat sampah Google Drive secara permanen (memerlukan confirm: true)."
+    )]
+    pub async fn gdrive_empty_trash(
+        &self,
+        Parameters(args): Parameters<EmptyTrashArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        if !args.confirm {
+            return Err(ErrorData::invalid_params(
+                "Konfirmasi 'confirm: true' diperlukan untuk mengosongkan tempat sampah.",
+                None,
+            ));
+        }
+
+        let client = Self::client().await?;
+        client
+            .empty_trash()
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "status": "trash_emptied"
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_revisions",
+        description = "Melihat riwayat versi/revisi dari suatu file di Google Drive (termasuk modifiedTime, size, dan user)."
+    )]
+    pub async fn gdrive_list_revisions(
+        &self,
+        Parameters(args): Parameters<ListRevisionsArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let revisions = client
+            .list_revisions(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(revisions)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_revision",
+        description = "Mengambil isi atau metadata dari suatu revisi/versi masa lalu dari file Google Drive."
+    )]
+    pub async fn gdrive_get_revision(
+        &self,
+        Parameters(args): Parameters<GetRevisionArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client().await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let (filename, bytes) = client
+            .download_revision_bytes(&file_id, &args.revision_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let is_utf8 = std::str::from_utf8(&bytes).is_ok();
+        let content_or_info = if is_utf8 {
+            String::from_utf8_lossy(&bytes).to_string()
+        } else {
+            format!("[Binary file content: {} bytes]", bytes.len())
+        };
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "revision_id": args.revision_id,
+                "filename": filename,
+                "size_bytes": bytes.len(),
+                "content": content_or_info
             }),
         }))
     }

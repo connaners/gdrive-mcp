@@ -67,6 +67,22 @@ pub struct OAuthCredentials {
     pub client_secret: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfilesConfig {
+    #[serde(default = "default_active_profile")]
+    pub active_profile: String,
+    #[serde(default = "default_profiles_list")]
+    pub profiles: Vec<String>,
+}
+
+fn default_active_profile() -> String {
+    "default".to_string()
+}
+
+fn default_profiles_list() -> Vec<String> {
+    vec!["default".to_string()]
+}
+
 pub const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const DRIVE_SCOPES: &str =
@@ -100,6 +116,251 @@ impl AuthManager {
             }
         }
         paths
+    }
+
+    /// Direktori konfigurasi utama
+    pub fn config_dir() -> Result<PathBuf> {
+        for dir in Self::get_possible_config_dirs() {
+            if dir.exists() {
+                return Ok(dir);
+            }
+        }
+        let target_dir = Self::get_possible_config_dirs()
+            .into_iter()
+            .next()
+            .context("Could not determine user config directory")?;
+        std::fs::create_dir_all(&target_dir)?;
+        Ok(target_dir)
+    }
+
+    /// Path ke file profiles.json
+    pub fn profiles_config_path() -> Result<PathBuf> {
+        let dir = Self::config_dir()?;
+        Ok(dir.join("profiles.json"))
+    }
+
+    /// Membaca konfigurasi profil (profiles.json)
+    pub fn load_profiles_config() -> ProfilesConfig {
+        if let Ok(path) = Self::profiles_config_path() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(cfg) = serde_json::from_str::<ProfilesConfig>(&content) {
+                    return cfg;
+                }
+            }
+        }
+        ProfilesConfig {
+            active_profile: "default".to_string(),
+            profiles: vec!["default".to_string()],
+        }
+    }
+
+    /// Menulis file secara atomic dengan temporary file dan set owner-only permissions di Unix
+    pub fn write_secure_file(path: &std::path::Path, content: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+
+        let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, content)
+            .with_context(|| format!("Gagal menulis temporary file ke {:?}", tmp_path))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+
+        std::fs::rename(&tmp_path, path)
+            .with_context(|| format!("Gagal merename temporary file ke {:?}", path))?;
+        Ok(())
+    }
+
+    /// Menyimpan konfigurasi profil ke profiles.json
+    pub fn save_profiles_config(cfg: &ProfilesConfig) -> Result<()> {
+        let path = Self::profiles_config_path()?;
+        let json = serde_json::to_string_pretty(cfg)?;
+        Self::write_secure_file(&path, &json)?;
+        Ok(())
+    }
+
+    /// Mendapatkan nama profile aktif (prioritas: GDRIVE_PROFILE env var > profiles.json > 'default')
+    pub fn get_active_profile() -> String {
+        if let Ok(env_profile) = std::env::var("GDRIVE_PROFILE") {
+            let trimmed = env_profile.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        let cfg = Self::load_profiles_config();
+        if cfg.active_profile.trim().is_empty() {
+            "default".to_string()
+        } else {
+            cfg.active_profile
+        }
+    }
+
+    /// Memvalidasi nama profile (hanya alfanumerik, underscore, dan hyphen)
+    pub fn validate_profile_name(name: &str) -> Result<&str> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Nama profile tidak boleh kosong.");
+        }
+        if trimmed.contains("..")
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || !trimmed
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            anyhow::bail!(
+                "Nama profile '{}' tidak valid. Hanya karakter alfanumerik, underscore, dan hyphen yang diperbolehkan.",
+                trimmed
+            );
+        }
+        Ok(trimmed)
+    }
+
+    /// Mengubah profile aktif di profiles.json
+    pub fn set_active_profile(name: &str) -> Result<()> {
+        let trimmed = Self::validate_profile_name(name)?;
+        let mut cfg = Self::load_profiles_config();
+        if !cfg.profiles.iter().any(|p| p == trimmed) {
+            cfg.profiles.push(trimmed.to_string());
+        }
+        cfg.active_profile = trimmed.to_string();
+        Self::save_profiles_config(&cfg)?;
+        Ok(())
+    }
+
+    /// Mengambil daftar semua profile yang terdaftar
+    pub fn list_profiles() -> Result<Vec<String>> {
+        let cfg = Self::load_profiles_config();
+        let mut list = cfg.profiles;
+        if !list.iter().any(|p| p == "default") {
+            list.insert(0, "default".to_string());
+        }
+        Ok(list)
+    }
+
+    /// Mendaftarkan nama profile baru ke profiles.json
+    pub fn register_profile(name: &str) -> Result<()> {
+        let trimmed = Self::validate_profile_name(name)?;
+        if trimmed == "default" {
+            return Ok(());
+        }
+        let mut cfg = Self::load_profiles_config();
+        if !cfg.profiles.iter().any(|p| p == trimmed) {
+            cfg.profiles.push(trimmed.to_string());
+            Self::save_profiles_config(&cfg)?;
+        }
+        Ok(())
+    }
+
+    /// Menghapus profile beserta file tokennya
+    pub fn remove_profile(name: &str) -> Result<()> {
+        let trimmed = Self::validate_profile_name(name)?;
+        if trimmed == "default" {
+            anyhow::bail!("Profile 'default' tidak dapat dihapus. Anda dapat menggunakan 'gdrive auth logout' untuk menghapus token default.");
+        }
+        let mut cfg = Self::load_profiles_config();
+        cfg.profiles.retain(|p| p != trimmed);
+        if cfg.active_profile == trimmed {
+            cfg.active_profile = "default".to_string();
+        }
+        Self::save_profiles_config(&cfg)?;
+
+        if let Ok(token_path) = Self::token_path_for_profile(Some(trimmed)) {
+            if token_path.exists() {
+                let _ = std::fs::remove_file(&token_path);
+            }
+            if let Some(parent) = token_path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        Ok(())
+    }
+
+    /// Menentukan path file token untuk profile tertentu (None = active profile)
+    pub fn token_path_for_profile(profile: Option<&str>) -> Result<PathBuf> {
+        let active_name = match profile {
+            Some(p) => p.to_string(),
+            None => Self::get_active_profile(),
+        };
+        let active = Self::validate_profile_name(&active_name)?;
+
+        if active == "default" {
+            Self::default_token_path()
+        } else {
+            let base_dir = Self::config_dir()?;
+            let prof_dir = base_dir.join("profiles").join(active);
+            Ok(prof_dir.join("token.json"))
+        }
+    }
+
+    /// Membaca token untuk profile tertentu
+    pub fn load_saved_token_for_profile(profile: Option<&str>) -> Result<TokenData> {
+        let path = Self::token_path_for_profile(profile)?;
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Belum login. File token tidak ditemukan di {:?}", path))?;
+        let token: TokenData = serde_json::from_str(&content)?;
+        Ok(token)
+    }
+
+    /// Menyimpan token untuk profile tertentu
+    pub fn save_token_for_profile(profile: Option<&str>, token: &TokenData) -> Result<()> {
+        let path = Self::token_path_for_profile(profile)?;
+        let token_to_save = token.clone().with_computed_expiry();
+        let json = serde_json::to_string_pretty(&token_to_save)?;
+        Self::write_secure_file(&path, &json)?;
+        if let Some(p) = profile {
+            let _ = Self::register_profile(p);
+        }
+        Ok(())
+    }
+
+    /// Menghapus token untuk profile tertentu
+    pub fn logout_for_profile(profile: Option<&str>) -> Result<()> {
+        let path = Self::token_path_for_profile(profile)?;
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Gagal menghapus token di {:?}", path))?;
+        }
+        Ok(())
+    }
+
+    /// Mendapatkan token yang valid untuk profile tertentu (proactive refresh)
+    pub async fn get_valid_token_for_profile(profile: Option<&str>) -> Result<String> {
+        let saved = Self::load_saved_token_for_profile(profile)?;
+        if !saved.is_expired() {
+            return Ok(saved.access_token);
+        }
+
+        if let Some(ref rf) = saved.refresh_token {
+            let auth = Self::from_env_or_config()?;
+            let refreshed = auth.refresh_access_token(rf).await?;
+            Self::save_token_for_profile(profile, &refreshed)?;
+            Ok(refreshed.access_token)
+        } else {
+            Ok(saved.access_token)
+        }
+    }
+
+    /// Memaksa refresh token untuk profile tertentu
+    pub async fn force_refresh_for_profile(profile: Option<&str>) -> Result<String> {
+        let saved = Self::load_saved_token_for_profile(profile)?;
+        if let Some(ref rf) = saved.refresh_token {
+            let auth = Self::from_env_or_config()?;
+            let refreshed = auth.refresh_access_token(rf).await?;
+            Self::save_token_for_profile(profile, &refreshed)?;
+            Ok(refreshed.access_token)
+        } else {
+            anyhow::bail!("Tidak ada refresh_token yang tersimpan untuk melakukan token refresh.");
+        }
     }
 
     /// Ambil credentials dari Environment Variables (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`),
@@ -194,7 +455,8 @@ impl AuthManager {
         Ok(path)
     }
 
-    pub fn token_path() -> Result<PathBuf> {
+    /// Menentukan path file token default (~/.config/gdrive-mcp/token.json)
+    pub fn default_token_path() -> Result<PathBuf> {
         for dir in Self::get_possible_config_dirs() {
             let p = dir.join("token.json");
             if p.exists() {
@@ -209,29 +471,20 @@ impl AuthManager {
         Ok(target_dir.join("token.json"))
     }
 
+    /// Menentukan path file token untuk profile aktif saat ini
+    pub fn token_path() -> Result<PathBuf> {
+        Self::token_path_for_profile(None)
+    }
     pub fn load_saved_token() -> Result<TokenData> {
-        let path = Self::token_path()?;
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Belum login. File token tidak ditemukan di {:?}", path))?;
-        let token: TokenData = serde_json::from_str(&content)?;
-        Ok(token)
+        Self::load_saved_token_for_profile(None)
     }
 
     pub fn save_token(token: &TokenData) -> Result<()> {
-        let path = Self::token_path()?;
-        let token_to_save = token.clone().with_computed_expiry();
-        let json = serde_json::to_string_pretty(&token_to_save)?;
-        std::fs::write(&path, json)?;
-        Ok(())
+        Self::save_token_for_profile(None, token)
     }
 
     pub fn logout() -> Result<()> {
-        let path = Self::token_path()?;
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("Gagal menghapus token di {:?}", path))?;
-        }
-        Ok(())
+        Self::logout_for_profile(None)
     }
 
     /// Buat URL otorisasi Google OAuth2
@@ -248,7 +501,11 @@ impl AuthManager {
     }
 
     /// Eksekusi alur login interaktif menggunakan loopback HTTP server lokal
-    pub async fn login(&self, no_browser: bool) -> Result<TokenData> {
+    pub async fn login_for_profile(
+        &self,
+        profile: Option<&str>,
+        no_browser: bool,
+    ) -> Result<TokenData> {
         // Coba bind ke port 8085, jika sibuk bind ke port dinamis apa saja
         let listener = match tokio::net::TcpListener::bind("127.0.0.1:8085").await {
             Ok(l) => l,
@@ -330,9 +587,14 @@ impl AuthManager {
 
         eprintln!("Kode otorisasi berhasil ditangkap. Menukarkan dengan access token...");
         let token = self.exchange_code(&code, &redirect_uri).await?;
-        Self::save_token(&token)?;
-        eprintln!("Token berhasil disimpan di {:?}", Self::token_path()?);
+        Self::save_token_for_profile(profile, &token)?;
+        let path = Self::token_path_for_profile(profile)?;
+        eprintln!("Token berhasil disimpan di {:?}", path);
         Ok(token)
+    }
+
+    pub async fn login(&self, no_browser: bool) -> Result<TokenData> {
+        self.login_for_profile(None, no_browser).await
     }
 
     /// Tukarkan authorization code menjadi access token & refresh token
@@ -399,33 +661,11 @@ impl AuthManager {
     /// Mendapatkan access token yang valid secara proaktif:
     /// Jika token tersimpan sudah expired atau sisa waktu < 5 menit, otomatis lakukan refresh & simpan
     pub async fn get_valid_token() -> Result<String> {
-        let saved = Self::load_saved_token()?;
-        if !saved.is_expired() {
-            return Ok(saved.access_token);
-        }
-
-        // Token expired atau mendekati expired
-        if let Some(ref rf) = saved.refresh_token {
-            let auth = Self::from_env_or_config()?;
-            let refreshed = auth.refresh_access_token(rf).await?;
-            Self::save_token(&refreshed)?;
-            Ok(refreshed.access_token)
-        } else {
-            Ok(saved.access_token)
-        }
+        Self::get_valid_token_for_profile(None).await
     }
 
-    /// Memaksa refresh token (misal setelah mendeteksi HTTP 401 Unauthorized dari Google Drive API)
     pub async fn force_refresh() -> Result<String> {
-        let saved = Self::load_saved_token()?;
-        if let Some(ref rf) = saved.refresh_token {
-            let auth = Self::from_env_or_config()?;
-            let refreshed = auth.refresh_access_token(rf).await?;
-            Self::save_token(&refreshed)?;
-            Ok(refreshed.access_token)
-        } else {
-            anyhow::bail!("Tidak ada refresh_token yang tersimpan untuk melakukan token refresh.");
-        }
+        Self::force_refresh_for_profile(None).await
     }
 
     /// Helper untuk mem-parsing 'code' dari raw HTTP GET request line
@@ -578,5 +818,57 @@ mod tests {
         use crate::client::GDriveClient;
         let client = GDriveClient::new("test_token_123".to_string());
         assert_eq!(client.get_token().await, "test_token_123");
+    }
+
+    #[test]
+    fn test_profiles_config_defaults() {
+        let default_cfg = ProfilesConfig {
+            active_profile: default_active_profile(),
+            profiles: default_profiles_list(),
+        };
+        assert_eq!(default_cfg.active_profile, "default");
+        assert_eq!(default_cfg.profiles, vec!["default"]);
+
+        let serialized = serde_json::to_string(&default_cfg).unwrap();
+        let deserialized: ProfilesConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.active_profile, "default");
+        assert_eq!(deserialized.profiles.len(), 1);
+    }
+
+    #[test]
+    fn test_active_profile_and_token_path_with_env_var() {
+        std::env::set_var("GDRIVE_PROFILE", "test_env_work");
+        assert_eq!(AuthManager::get_active_profile(), "test_env_work");
+        let path = AuthManager::token_path().unwrap();
+        assert!(path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("profiles/test_env_work/token.json"));
+
+        std::env::set_var("GDRIVE_PROFILE", "../bad_path");
+        assert!(AuthManager::token_path().is_err());
+
+        std::env::remove_var("GDRIVE_PROFILE");
+    }
+
+    #[test]
+    fn test_validate_profile_name() {
+        assert!(AuthManager::validate_profile_name("work").is_ok());
+        assert!(AuthManager::validate_profile_name("personal_1").is_ok());
+        assert!(AuthManager::validate_profile_name("my-account").is_ok());
+
+        assert!(AuthManager::validate_profile_name("").is_err());
+        assert!(AuthManager::validate_profile_name("   ").is_err());
+        assert!(AuthManager::validate_profile_name("../etc").is_err());
+        assert!(AuthManager::validate_profile_name("sub/dir").is_err());
+        assert!(AuthManager::validate_profile_name("sub\\dir").is_err());
+        assert!(AuthManager::validate_profile_name("work:1").is_err());
+    }
+
+    #[test]
+    fn test_remove_profile_rejects_empty_and_default() {
+        assert!(AuthManager::remove_profile("").is_err());
+        assert!(AuthManager::remove_profile("   ").is_err());
+        assert!(AuthManager::remove_profile("default").is_err());
     }
 }

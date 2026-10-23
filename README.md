@@ -1,6 +1,6 @@
 # gdrive-mcp
 
-[![CI](https://github.com/connaners/gdrive-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/connaners/gdrive-mcp/actions/workflows/ci.yml)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/connaners/gdrive-mcp/tree/main.svg?style=shield)](https://circleci.com/gh/connaners/gdrive-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 High-performance, schema-safe **Google Drive CLI & Model Context Protocol (MCP) Server** written in Rust.
@@ -124,7 +124,9 @@ Usage: gdrive <COMMAND>
 
 Commands:
   auth      Manajemen autentikasi Google OAuth2 (login, status, logout)
-  search    Cari file atau folder di Google Drive (support full-text & order-by)
+  search    Cari file atau folder di Google Drive (support kata jamak tanpa petik, full-text, & order-by)
+  info      Tampilkan informasi metadata detail file atau folder di Google Drive
+  copy      Salin (duplicate) file di Google Drive
   rename    Ganti nama file atau folder di Google Drive
   move      Pindahkan file atau folder ke folder tujuan
   read      Baca isi file dari Google Drive (teks / markdown / docs / sheets / slides)
@@ -133,24 +135,35 @@ Commands:
   upload    Upload file lokal dari disk ke Google Drive
   download  Download file dari Google Drive ke disk lokal
   mkdir     Buat folder baru di Google Drive
-  trash     Pindahkan file atau folder ke tempat sampah (Safe Trash)
-  drives    Tampilkan daftar Shared Drives (Team Drives) yang dapat diakses
-  mcp       Jalankan MCP server untuk AI agents (Hermes, Claude, OpenCode)
+  trash        Kelola tempat sampah (Trash) Google Drive
+  drives       Tampilkan daftar Shared Drives (Team Drives) yang dapat diakses
+  share        Bagikan file atau folder ke pengguna, grup, domain, atau publik (anyone)
+  permissions  Kelola hak akses (permissions) file atau folder di Google Drive
+  comments     Kelola komentar dan review pada file di Google Drive
+  revisions    Kelola riwayat revisi (versi) file di Google Drive
+  mcp          Jalankan MCP server untuk AI agents (Hermes, Claude, OpenCode)
 ```
 
 ### Examples
 
 ```bash
-# Search files with pretty table output (shows ID, Type icon, Name, Size, Modified Date)
-gdrive search "Roadmap" --limit 10 -s "modifiedTime desc"
+# Search files with pretty table output (supports multi-word queries without quotes)
+gdrive search iboss v2 --limit 10 -s "modifiedTime desc"
+gdrive search "Roadmap Q3" --limit 10
+
+# Inspect detailed metadata of a file or folder
+gdrive info 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+gdrive info 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms --json
+
+# Copy/duplicate a file
+gdrive copy 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms --name "Roadmap-Backup.md"
 
 # Full-text search inside document contents
 gdrive search "API Authentication" --full-text
 
 # Output in JSON or plain format for scripts and piping
-gdrive search "Roadmap" --json
-gdrive search "Roadmap" --plain
-
+gdrive search Roadmap --json
+gdrive search Roadmap --plain
 # Rename a file
 gdrive rename 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms "Roadmap-v2.md"
 
@@ -185,28 +198,71 @@ gdrive trash 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
 
 # List accessible Shared Drives
 gdrive drives
+
+# Share a file with anyone (public reader link)
+gdrive share 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+
+# Share a file with a specific user as writer
+gdrive share 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms --role writer --target-type user --email alice@example.com --notification
+
+# List permissions on a file
+gdrive permissions list 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+
+# Revoke/delete a permission
+gdrive permissions revoke 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms perm_id_123
+
+# Comments & Review collaboration
+gdrive comments list 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+gdrive comments add 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms "Mohon tinjau bagian arsitektur"
+gdrive comments resolve 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms comment_id_123
+
+# Trash lifecycle & recovery
+gdrive trash list
+gdrive trash restore 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+gdrive trash empty --yes
+
+# Revisions & version history
+gdrive revisions list 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
+gdrive revisions download 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms rev_id_123 -o ./previous-version.docx
+
+# Multi-account profiles
+gdrive auth profile list
+gdrive auth profile switch work
+gdrive --profile personal search "Invoice"
 ```
 
 ---
 
 ## 🤖 MCP Server Tools (Model Context Protocol)
 
-When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 11 tools to LLMs:
-
+When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 25 schema-safe tools to LLMs:
 | Tool Name | Description | Key Arguments |
 |:---|:---|:---|
 | `gdrive_search` | Search files & folders (supports full-text, ordering & pagination) | `query` (string), `folder_id` (string), `page_size` (u32), `page_token` (string), `full_text` (bool), `order_by` (string) |
 | `gdrive_read_file` | Read file (Docs to md, Sheets to CSV, Slides to text) | `file_id` (string) |
+| `gdrive_get_file_info` | Inspect file/folder metadata without downloading full content | `file_id` (string) |
 | `gdrive_list_folder` | List contents of a folder | `folder_id` (string), `page_size` (u32) |
 | `gdrive_create_file` | Create a new file or native Google Doc | `name` (string), `content` (string), `parent_folder_id` (string), `as_google_doc` (bool) |
 | `gdrive_update_file` | Update or append text to an existing file | `file_id` (string), `content` (string), `append` (bool) |
+| `gdrive_copy_file` | Duplicate a file with optional new name or destination folder | `file_id` (string), `new_name` (string), `parent_folder_id` (string) |
 | `gdrive_download_file` | Download a file to local disk by ID or name | `file_id_or_name` (string), `destination_path` (string) |
 | `gdrive_rename_file` | Rename a file or folder | `file_id` (string), `new_name` (string) |
 | `gdrive_move_file` | Move a file or folder to a target folder | `file_id` (string), `new_parent_id` (string), `old_parent_id` (string) |
 | `gdrive_create_folder`| Create a folder in personal or Shared Drives | `name` (string), `parent_folder_id` (string) |
 | `gdrive_trash_file` | Safely move a file or folder to the trash | `file_id` (string) |
 | `gdrive_list_drives` | List accessible enterprise Shared Drives | `page_size` (u32) |
-
+| `gdrive_list_permissions` | View who has access to a file or folder | `file_id` (string) |
+| `gdrive_share_file` | Share a file or folder with users, groups, domains, or anyone with link | `file_id` (string), `role` (string), `permission_type` (string), `email_address` (string), `send_notification` (bool) |
+| `gdrive_delete_permission` | Revoke a permission from a file or folder | `file_id` (string), `permission_id` (string) |
+| `gdrive_get_shareable_link` | Get shareable web link with optional automatic public access | `file_id` (string), `make_public` (bool) |
+| `gdrive_list_comments` | View comments and discussions on a document | `file_id` (string), `page_size` (u32) |
+| `gdrive_add_comment` | Add feedback or review comments to a file | `file_id` (string), `content` (string) |
+| `gdrive_resolve_comment` | Mark a comment as resolved | `file_id` (string), `comment_id` (string) |
+| `gdrive_list_trash` | List files and folders currently in the trash bin | `page_size` (u32), `page_token` (string) |
+| `gdrive_restore_file` | Restore a file or folder from trash (untrash) | `file_id` (string) |
+| `gdrive_empty_trash` | Permanently empty all items in trash (requires confirmation) | `confirm` (bool) |
+| `gdrive_list_revisions` | View previous versions and revision history of a file | `file_id` (string) |
+| `gdrive_get_revision` | Retrieve content or metadata of a past revision | `file_id` (string), `revision_id` (string) |
 ---
 
 ## 🔌 Agent Configurations

@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use gdrive_core::{AuthManager, CreateFileOptions, GDriveClient, UpdateFileOptions};
+use gdrive_core::{
+    AuthManager, CreateFileOptions, CreatePermissionOptions, GDriveClient, UpdateFileOptions,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 
@@ -18,6 +20,10 @@ mod format;
     about = "Google Drive CLI & MCP Server"
 )]
 struct Cli {
+    /// Nama profile Google Drive yang digunakan (contoh: work, personal, default)
+    #[arg(long, global = true)]
+    pub profile: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -31,8 +37,9 @@ enum Commands {
     },
     /// Cari file atau folder di Google Drive
     Search {
-        /// Kata kunci query nama file
-        query: Option<String>,
+        /// Kata kunci query nama file (dapat berupa banyak kata tanpa tanda petik, misal: gdrive search iboss v2)
+        #[arg(num_args(0..))]
+        query: Vec<String>,
         /// ID folder spesifik jika ingin membatasi pencarian
         #[arg(short, long)]
         folder: Option<String>,
@@ -54,6 +61,28 @@ enum Commands {
         /// Tampilkan output dalam format teks sederhana (ID | Name | Mime)
         #[arg(long)]
         plain: bool,
+    },
+    /// Tampilkan informasi metadata detail file atau folder di Google Drive
+    Info {
+        /// ID file atau folder yang ingin diperiksa
+        file_id: String,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Salin (duplicate) file di Google Drive
+    Copy {
+        /// ID file yang ingin disalin
+        file_id: String,
+        /// Nama baru untuk file salinan (opsional)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// ID folder tujuan file salinan (opsional)
+        #[arg(short, long)]
+        parent: Option<String>,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
     },
     /// Ganti nama file atau folder di Google Drive
     Rename {
@@ -130,10 +159,13 @@ enum Commands {
         #[arg(short, long)]
         parent: Option<String>,
     },
-    /// Pindahkan file atau folder ke tempat sampah (Safe Trash)
+    /// Kelola tempat sampah (Trash) Google Drive
     Trash {
-        /// ID file atau folder yang ingin dipindahkan ke trash
-        file_id: String,
+        #[command(subcommand)]
+        action: Option<TrashCommands>,
+        /// ID file atau folder yang ingin dipindahkan ke tempat sampah (shortcut: gdrive trash <file_id>)
+        #[arg(value_name = "FILE_ID")]
+        file_id: Option<String>,
     },
     /// Tampilkan daftar Shared Drives (Team Drives) yang dapat diakses
     Drives {
@@ -141,10 +173,153 @@ enum Commands {
         #[arg(short, long, default_value = "50")]
         limit: u32,
     },
+    /// Bagikan file atau folder ke pengguna, grup, domain, atau publik (anyone)
+    Share {
+        /// ID file atau folder yang ingin dibagikan
+        file_id: String,
+        /// Role / hak akses ('reader', 'commenter', 'writer', 'fileOrganizer')
+        #[arg(short, long, default_value = "reader")]
+        role: String,
+        /// Tipe target ('anyone', 'user', 'group', 'domain')
+        #[arg(short = 't', long, default_value = "anyone")]
+        target_type: String,
+        /// Alamat email target (wajib jika target-type adalah 'user' atau 'group')
+        #[arg(short, long)]
+        email: Option<String>,
+        /// Nama domain (wajib jika target-type adalah 'domain', misal: company.com)
+        #[arg(long)]
+        domain: Option<String>,
+        /// Kirim notifikasi email ke target saat dibagikan
+        #[arg(long)]
+        notification: bool,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Kelola hak akses (permissions) file atau folder di Google Drive
+    Permissions {
+        #[command(subcommand)]
+        action: PermissionsCommands,
+    },
+    /// Kelola komentar dan review pada file di Google Drive
+    Comments {
+        #[command(subcommand)]
+        action: CommentsCommands,
+    },
+    /// Kelola riwayat revisi (versi) file di Google Drive
+    Revisions {
+        #[command(subcommand)]
+        action: RevisionsCommands,
+    },
     /// Jalankan MCP server untuk AI agents (Hermes, Claude, OpenCode)
     Mcp {
         #[command(subcommand)]
         action: McpCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum PermissionsCommands {
+    /// Tampilkan daftar permission yang dimiliki oleh suatu file atau folder
+    List {
+        /// ID file atau folder yang ingin diperiksa
+        file_id: String,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hapus/cabut hak akses (permission) dari suatu file atau folder
+    Revoke {
+        /// ID file atau folder
+        file_id: String,
+        /// ID permission yang ingin dihapus
+        permission_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TrashCommands {
+    /// Pindahkan file atau folder ke tempat sampah (Safe Trash)
+    Put {
+        /// ID file atau folder
+        file_id: String,
+    },
+    /// Tampilkan daftar file dan folder yang berada di tempat sampah
+    List {
+        /// Batas jumlah file yang ditampilkan
+        #[arg(short, long, default_value = "50")]
+        limit: u32,
+        /// Token halaman untuk melanjutkan pagination
+        #[arg(long)]
+        page_token: Option<String>,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pulihkan file atau folder dari tempat sampah (untrash)
+    Restore {
+        /// ID file atau folder yang ingin dipulihkan
+        file_id: String,
+    },
+    /// Kosongkan seluruh tempat sampah secara permanen
+    Empty {
+        /// Lewati konfirmasi interaktif
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommentsCommands {
+    /// Tampilkan daftar komentar pada file Google Drive
+    List {
+        /// ID file yang ingin diperiksa komentarnya
+        file_id: String,
+        /// Batas jumlah komentar (default: 50)
+        #[arg(short, long, default_value = "50")]
+        limit: u32,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tambahkan komentar baru pada file Google Drive
+    Add {
+        /// ID file target
+        file_id: String,
+        /// Isi teks komentar
+        content: String,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tandai komentar sebagai terselesaikan (resolved)
+    Resolve {
+        /// ID file target
+        file_id: String,
+        /// ID komentar yang ingin diselesaikan
+        comment_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RevisionsCommands {
+    /// Tampilkan riwayat revisi/versi dari suatu file
+    List {
+        /// ID file yang ingin diperiksa
+        file_id: String,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unduh file pada revisi/versi spesifik
+    Download {
+        /// ID file
+        file_id: String,
+        /// ID revisi yang ingin diunduh
+        revision_id: String,
+        /// Path output tujuan penyimpanan file (opsional)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -155,13 +330,45 @@ enum AuthCommands {
         /// Jangan membuka browser secara otomatis (hanya tampilkan URL otorisasi)
         #[arg(long)]
         no_browser: bool,
+        /// Login ke profile spesifik
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Jalankan interactive setup wizard untuk konfigurasi Google OAuth Client ID & Secret
     Setup,
     /// Cek status token autentikasi yang tersimpan saat ini
-    Status,
+    Status {
+        /// Periksa status profile tertentu
+        #[arg(long)]
+        profile: Option<String>,
+    },
     /// Hapus token autentikasi yang tersimpan (logout)
-    Logout,
+    Logout {
+        /// Logout dari profile tertentu
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// Kelola profil akun Google Drive (multi-account)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Tampilkan daftar profil dan tandai mana yang aktif
+    List,
+    /// Ganti profil aktif
+    Switch {
+        /// Nama profil yang ingin diaktifkan
+        name: String,
+    },
+    /// Hapus profil dan token yang terkait
+    Remove {
+        /// Nama profil yang ingin dihapus
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -180,8 +387,77 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Auth { action } => handle_auth(action).await,
+    if let Err(err) = run(cli).await {
+        eprintln!("❌ Error: {:#}", err);
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+async fn dispatch_file_mutation(cmd: Commands) -> Result<Option<Commands>> {
+    match cmd {
+        Commands::Copy {
+            file_id,
+            name,
+            parent,
+            json,
+        } => {
+            handle_copy(file_id, name, parent, json).await?;
+            Ok(None)
+        }
+        Commands::Rename { file_id, new_name } => {
+            handle_rename(file_id, new_name).await?;
+            Ok(None)
+        }
+        Commands::Move {
+            file_id,
+            target_folder,
+            from,
+        } => {
+            handle_move(file_id, target_folder, from).await?;
+            Ok(None)
+        }
+        Commands::Create {
+            name,
+            content,
+            parent,
+            docs,
+        } => {
+            handle_create(name, content, parent, docs).await?;
+            Ok(None)
+        }
+        Commands::Update {
+            file_id,
+            content,
+            append,
+        } => {
+            handle_update(file_id, content, append).await?;
+            Ok(None)
+        }
+        Commands::Upload {
+            path,
+            name,
+            parent,
+            docs,
+        } => {
+            handle_upload(path, name, parent, docs).await?;
+            Ok(None)
+        }
+        Commands::Mkdir { name, parent } => {
+            handle_mkdir(name, parent).await?;
+            Ok(None)
+        }
+        Commands::Trash { action, file_id } => {
+            handle_trash(action, file_id).await?;
+            Ok(None)
+        }
+        other => Ok(Some(other)),
+    }
+}
+
+async fn dispatch_query_command(cmd: Commands) -> Result<Option<Commands>> {
+    match cmd {
         Commands::Search {
             query,
             folder,
@@ -195,98 +471,194 @@ async fn main() -> Result<()> {
             handle_search(
                 query, folder, limit, full_text, order_by, page_token, json, plain,
             )
+            .await?;
+            Ok(None)
+        }
+        Commands::Info { file_id, json } => {
+            handle_info(file_id, json).await?;
+            Ok(None)
+        }
+        Commands::Read { file_id } => {
+            handle_read(file_id).await?;
+            Ok(None)
+        }
+        Commands::Download { target, output } => {
+            handle_download(target, output).await?;
+            Ok(None)
+        }
+        Commands::Drives { limit } => {
+            handle_drives(limit).await?;
+            Ok(None)
+        }
+        other => Ok(Some(other)),
+    }
+}
+
+async fn dispatch_collaboration_command(cmd: Commands) -> Result<()> {
+    match cmd {
+        Commands::Auth { action } => handle_auth(action).await,
+        Commands::Share {
+            file_id,
+            role,
+            target_type,
+            email,
+            domain,
+            notification,
+            json,
+        } => {
+            handle_share(
+                file_id,
+                role,
+                target_type,
+                email,
+                domain,
+                notification,
+                json,
+            )
             .await
         }
-        Commands::Rename { file_id, new_name } => handle_rename(file_id, new_name).await,
-        Commands::Move {
-            file_id,
-            target_folder,
-            from,
-        } => handle_move(file_id, target_folder, from).await,
-        Commands::Read { file_id } => handle_read(file_id).await,
-        Commands::Create {
-            name,
-            content,
-            parent,
-            docs,
-        } => handle_create(name, content, parent, docs).await,
-        Commands::Update {
-            file_id,
-            content,
-            append,
-        } => handle_update(file_id, content, append).await,
-        Commands::Upload {
-            path,
-            name,
-            parent,
-            docs,
-        } => handle_upload(path, name, parent, docs).await,
-        Commands::Download { target, output } => handle_download(target, output).await,
-        Commands::Mkdir { name, parent } => handle_mkdir(name, parent).await,
-        Commands::Trash { file_id } => handle_trash(file_id).await,
-        Commands::Drives { limit } => handle_drives(limit).await,
+        Commands::Permissions { action } => handle_permissions(action).await,
+        Commands::Comments { action } => handle_comments(action).await,
+        Commands::Revisions { action } => handle_revisions(action).await,
         Commands::Mcp { action } => handle_mcp(action).await,
+        _ => unreachable!(),
     }
+}
+
+async fn run(cli: Cli) -> Result<()> {
+    if let Some(ref p) = cli.profile {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            std::env::set_var("GDRIVE_PROFILE", trimmed);
+        }
+    }
+
+    let cmd = match dispatch_file_mutation(cli.command).await? {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    let cmd = match dispatch_query_command(cmd).await? {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    dispatch_collaboration_command(cmd).await
+}
+
+async fn handle_auth_login(no_browser: bool, profile: Option<String>) -> Result<()> {
+    let env_profile = std::env::var("GDRIVE_PROFILE").ok();
+    let target_profile = profile
+        .as_deref()
+        .or_else(|| env_profile.as_deref().filter(|s| !s.trim().is_empty()));
+    let auth = match AuthManager::from_env_or_config() {
+        Ok(a) => a,
+        Err(err) => {
+            use std::io::Write;
+            eprintln!("⚠️  {}", err);
+            eprint!("\nApakah Anda ingin menjalankan Interactive Setup Wizard sekarang? [Y/n]: ");
+            std::io::stderr().flush()?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let trimmed = input.trim();
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("y")
+                || trimmed.eq_ignore_ascii_case("yes")
+            {
+                handle_setup().await?;
+                return Ok(());
+            } else {
+                return Err(err);
+            }
+        }
+    };
+    if let Some(p) = target_profile {
+        eprintln!("Memulai login untuk profil '{}'...", p);
+    }
+    auth.login_for_profile(target_profile, no_browser).await?;
+    eprintln!("Otorisasi Google Drive berhasil! Token telah disimpan.");
+    Ok(())
+}
+
+fn handle_auth_status(profile: Option<String>) -> Result<()> {
+    let active = AuthManager::get_active_profile();
+    let target = profile.as_deref().unwrap_or(&active);
+    eprintln!("Profil: '{}' (aktif: '{}')", target, active);
+    match AuthManager::load_saved_token_for_profile(Some(target)) {
+        Ok(token) => {
+            let path = AuthManager::token_path_for_profile(Some(target))?;
+            eprintln!("Status: Terautentikasi");
+            eprintln!("Lokasi token: {:?}", path);
+            if let Some(remaining) = token.seconds_remaining() {
+                let mins = remaining / 60;
+                let secs = remaining % 60;
+                eprintln!("Masa berlaku token: {}m {}s tersisa", mins, secs);
+            } else {
+                eprintln!("Masa berlaku token: Tidak ada info expiry");
+            }
+            if token.refresh_token.is_some() {
+                eprintln!("Auto-refresh: Aktif (refresh token tersedia)");
+            } else {
+                eprintln!("Auto-refresh: Non-aktif (refresh token tidak tersedia)");
+            }
+        }
+        Err(e) => {
+            eprintln!("Status: Belum terautentikasi ({})", e);
+        }
+    }
+    Ok(())
+}
+
+fn handle_auth_logout(profile: Option<String>) -> Result<()> {
+    let active = AuthManager::get_active_profile();
+    let target = profile.as_deref().unwrap_or(&active);
+    AuthManager::logout_for_profile(Some(target))?;
+    eprintln!(
+        "Berhasil logout dari profil '{}'. File token telah dihapus.",
+        target
+    );
+    Ok(())
+}
+
+fn handle_auth_profile(action: ProfileCommands) -> Result<()> {
+    match action {
+        ProfileCommands::List => {
+            let active = AuthManager::get_active_profile();
+            let profiles = AuthManager::list_profiles()?;
+            println!("Profil Google Drive terdaftar:");
+            for p in profiles {
+                if p == active {
+                    println!("* {} (aktif)", p);
+                } else {
+                    println!("  {}", p);
+                }
+            }
+        }
+        ProfileCommands::Switch { name } => {
+            AuthManager::set_active_profile(&name)?;
+            eprintln!("✅ Berhasil beralih ke profil '{}'.", name);
+            println!("Active profile: {}", name);
+        }
+        ProfileCommands::Remove { name } => {
+            AuthManager::remove_profile(&name)?;
+            eprintln!("✅ Berhasil menghapus profil '{}'.", name);
+            println!("Removed profile: {}", name);
+        }
+    }
+    Ok(())
 }
 
 async fn handle_auth(action: AuthCommands) -> Result<()> {
     match action {
-        AuthCommands::Login { no_browser } => {
-            let auth = match AuthManager::from_env_or_config() {
-                Ok(a) => a,
-                Err(err) => {
-                    use std::io::Write;
-                    eprintln!("⚠️  {}", err);
-                    eprint!("\nApakah Anda ingin menjalankan Interactive Setup Wizard sekarang? [Y/n]: ");
-                    std::io::stderr().flush()?;
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    let trimmed = input.trim();
-                    if trimmed.is_empty()
-                        || trimmed.eq_ignore_ascii_case("y")
-                        || trimmed.eq_ignore_ascii_case("yes")
-                    {
-                        handle_setup().await?;
-                        return Ok(());
-                    } else {
-                        return Err(err);
-                    }
-                }
-            };
-            auth.login(no_browser).await?;
-            eprintln!("Otorisasi Google Drive berhasil! Token telah disimpan.");
-        }
-        AuthCommands::Setup => {
-            handle_setup().await?;
-        }
-        AuthCommands::Status => match AuthManager::load_saved_token() {
-            Ok(token) => {
-                let path = AuthManager::token_path()?;
-                eprintln!("Status: Terautentikasi");
-                eprintln!("Lokasi token: {:?}", path);
-                if let Some(remaining) = token.seconds_remaining() {
-                    let mins = remaining / 60;
-                    let secs = remaining % 60;
-                    eprintln!("Masa berlaku token: {}m {}s tersisa", mins, secs);
-                } else {
-                    eprintln!("Masa berlaku token: Tidak ada info expiry");
-                }
-                if token.refresh_token.is_some() {
-                    eprintln!("Auto-refresh: Aktif (refresh token tersedia)");
-                } else {
-                    eprintln!("Auto-refresh: Non-aktif (refresh token tidak tersedia)");
-                }
-            }
-            Err(e) => {
-                eprintln!("Status: Belum terautentikasi ({})", e);
-            }
-        },
-        AuthCommands::Logout => {
-            AuthManager::logout()?;
-            eprintln!("Berhasil logout. File token telah dihapus.");
-        }
+        AuthCommands::Login {
+            no_browser,
+            profile,
+        } => handle_auth_login(no_browser, profile).await,
+        AuthCommands::Setup => handle_setup().await,
+        AuthCommands::Status { profile } => handle_auth_status(profile),
+        AuthCommands::Logout { profile } => handle_auth_logout(profile),
+        AuthCommands::Profile { action } => handle_auth_profile(action),
     }
-    Ok(())
 }
 
 async fn handle_setup() -> Result<()> {
@@ -406,7 +778,7 @@ async fn handle_setup() -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_search(
-    query: Option<String>,
+    query: Vec<String>,
     folder: Option<String>,
     limit: u32,
     full_text: bool,
@@ -415,10 +787,21 @@ async fn handle_search(
     json: bool,
     plain: bool,
 ) -> Result<()> {
+    let query_str = if query.is_empty() {
+        None
+    } else {
+        let joined = query.join(" ").trim().to_string();
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    };
+
     let client = GDriveClient::from_saved_token().await?;
     let res = client
         .search_files_with_options(gdrive_core::SearchFileOptions {
-            query,
+            query: query_str,
             folder_id: folder,
             page_size: Some(limit),
             page_token,
@@ -447,6 +830,37 @@ async fn handle_search(
             "\n👉 Halaman berikutnya tersedia. Gunakan --page-token {}",
             token
         );
+    }
+    Ok(())
+}
+
+async fn handle_info(file_id: String, json: bool) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    let cleaned = GDriveClient::clean_file_id(&file_id);
+    let meta = client.get_file_metadata(cleaned).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&meta)?);
+    } else {
+        println!("{}", format::render_file_info(&meta));
+    }
+    Ok(())
+}
+
+async fn handle_copy(
+    file_id: String,
+    name: Option<String>,
+    parent: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    let copied = client
+        .copy_file(&file_id, name.as_deref(), parent.as_deref())
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&copied)?);
+    } else {
+        eprintln!("✅ Berhasil menyalin file ke Google Drive.");
+        println!("{}", format::render_file_info(&copied));
     }
     Ok(())
 }
@@ -731,14 +1145,68 @@ async fn handle_mkdir(name: String, parent: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn handle_trash(file_id: String) -> Result<()> {
+async fn handle_trash(action: Option<TrashCommands>, file_id: Option<String>) -> Result<()> {
     let client = GDriveClient::from_saved_token().await?;
-    let trashed = client.trash_file(&file_id).await?;
-    eprintln!(
-        "File berhasil dipindahkan ke tempat sampah: ID={}",
-        trashed.id
-    );
-    println!("Trashed ID: {}", trashed.id);
+    match action {
+        Some(TrashCommands::Put { file_id }) => {
+            let trashed = client.trash_file(&file_id).await?;
+            eprintln!(
+                "File berhasil dipindahkan ke tempat sampah: ID={}",
+                trashed.id
+            );
+            println!("Trashed ID: {}", trashed.id);
+        }
+        Some(TrashCommands::List {
+            limit,
+            page_token,
+            json,
+        }) => {
+            let list = client
+                .list_trash(Some(limit), page_token.as_deref())
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                let table = format::render_files_table(&list.files);
+                println!("{table}");
+            }
+        }
+        Some(TrashCommands::Restore { file_id }) => {
+            let restored = client.restore_trash_file(&file_id).await?;
+            eprintln!(
+                "✅ File '{}' ({}) berhasil dipulihkan dari tempat sampah.",
+                restored.name, restored.id
+            );
+            println!("Restored ID: {}", restored.id);
+        }
+        Some(TrashCommands::Empty { yes }) => {
+            if !yes {
+                eprint!("⚠️ Apakah Anda yakin ingin MENGOSONGKAN tempat sampah secara PERMANEN? (y/N): ");
+                std::io::stderr().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("Dibatalkan.");
+                    return Ok(());
+                }
+            }
+            client.empty_trash().await?;
+            eprintln!("✅ Tempat sampah Google Drive berhasil dikosongkan.");
+            println!("Status: trash_emptied");
+        }
+        None => {
+            if let Some(fid) = file_id {
+                let trashed = client.trash_file(&fid).await?;
+                eprintln!(
+                    "File berhasil dipindahkan ke tempat sampah: ID={}",
+                    trashed.id
+                );
+                println!("Trashed ID: {}", trashed.id);
+            } else {
+                bail!("Harap tentukan file_id yang ingin di-trash atau gunakan subcommand: list, restore, empty, put. Jalankan 'gdrive trash --help'.");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -755,6 +1223,197 @@ async fn handle_drives(limit: u32) -> Result<()> {
     Ok(())
 }
 
+async fn handle_share(
+    file_id: String,
+    role: String,
+    target_type: String,
+    email: Option<String>,
+    domain: Option<String>,
+    notification: bool,
+    json: bool,
+) -> Result<()> {
+    let target_type = if target_type == "anyone"
+        && email
+            .as_deref()
+            .map(|e| !e.trim().is_empty())
+            .unwrap_or(false)
+    {
+        "user".to_string()
+    } else {
+        target_type
+    };
+
+    if (target_type == "user" || target_type == "group")
+        && email.as_deref().unwrap_or("").trim().is_empty()
+    {
+        bail!(
+            "Argumen --email wajib diisi jika --target-type adalah '{}'.",
+            target_type
+        );
+    }
+    if target_type == "domain" && domain.as_deref().unwrap_or("").trim().is_empty() {
+        bail!("Argumen --domain wajib diisi jika --target-type adalah 'domain'.");
+    }
+
+    let client = GDriveClient::from_saved_token().await?;
+    let opts = CreatePermissionOptions {
+        role: role.clone(),
+        permission_type: target_type.clone(),
+        email_address: email.clone(),
+        domain: domain.clone(),
+        send_notification_email: notification,
+    };
+
+    let perm = client.create_permission(&file_id, opts).await?;
+    let link = client.get_shareable_link(&file_id, false).await.ok();
+
+    if json {
+        let output = serde_json::json!({
+            "file_id": file_id,
+            "permission": perm,
+            "shareable_link": link,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        eprintln!("✅ File berhasil dibagikan!");
+        println!("Permission ID : {}", perm.id);
+        println!("Role          : {}", perm.role);
+        println!("Target Tipe   : {}", perm.permission_type);
+        if let Some(target_email) = perm.email_address {
+            println!("Email         : {}", target_email);
+        }
+        if let Some(l) = link {
+            println!("Link Berbagi  : {}", l);
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_permissions(action: PermissionsCommands) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    match action {
+        PermissionsCommands::List { file_id, json } => {
+            let perms = client.list_permissions(&file_id).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&perms)?);
+            } else {
+                let table = format::render_permissions_table(&perms);
+                println!("{table}");
+            }
+        }
+        PermissionsCommands::Revoke {
+            file_id,
+            permission_id,
+        } => {
+            client.delete_permission(&file_id, &permission_id).await?;
+            eprintln!(
+                "✅ Permission '{}' berhasil dicabut dari file '{}'.",
+                permission_id, file_id
+            );
+            println!("Status: revoked");
+        }
+    }
+    Ok(())
+}
+
+async fn handle_comments(action: CommentsCommands) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    match action {
+        CommentsCommands::List {
+            file_id,
+            limit,
+            json,
+        } => {
+            let comments = client.list_comments(&file_id, Some(limit)).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&comments)?);
+            } else {
+                let table = format::render_comments_table(&comments);
+                println!("{table}");
+            }
+        }
+        CommentsCommands::Add {
+            file_id,
+            content,
+            json,
+        } => {
+            let comment = client.create_comment(&file_id, &content).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&comment)?);
+            } else {
+                eprintln!("✅ Komentar berhasil ditambahkan ke file '{}'.", file_id);
+                println!("ID: {}", comment.id);
+                println!("Content: {}", comment.content);
+            }
+        }
+        CommentsCommands::Resolve {
+            file_id,
+            comment_id,
+        } => {
+            let comment = client.resolve_comment(&file_id, &comment_id).await?;
+            eprintln!(
+                "✅ Komentar '{}' berhasil ditandai resolved pada file '{}'.",
+                comment_id, file_id
+            );
+            println!("Status: resolved (ID: {})", comment.id);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_revisions(action: RevisionsCommands) -> Result<()> {
+    let client = GDriveClient::from_saved_token().await?;
+    match action {
+        RevisionsCommands::List { file_id, json } => {
+            let revs = client.list_revisions(&file_id).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&revs)?);
+            } else {
+                let table = format::render_revisions_table(&revs);
+                println!("{table}");
+            }
+        }
+        RevisionsCommands::Download {
+            file_id,
+            revision_id,
+            output,
+        } => {
+            let (filename, bytes) = client
+                .download_revision_bytes(&file_id, &revision_id)
+                .await?;
+            let sanitized = format::sanitize_download_filename(&filename);
+            let rev_filename = format!("rev_{}_{}", revision_id, sanitized);
+            let target_path = match output {
+                Some(p) => {
+                    if p.is_dir() {
+                        p.join(rev_filename)
+                    } else {
+                        p
+                    }
+                }
+                None => PathBuf::from(rev_filename),
+            };
+
+            if target_path.is_symlink() {
+                bail!("Destinasi output {:?} adalah symbolic link.", target_path);
+            }
+
+            let part_path = target_path.with_extension("part");
+            std::fs::write(&part_path, &bytes)
+                .with_context(|| format!("Gagal menulis temporary part file ke {:?}", part_path))?;
+            std::fs::rename(&part_path, &target_path)
+                .with_context(|| format!("Gagal menyimpan revisi file ke {:?}", target_path))?;
+            eprintln!(
+                "✅ Revisi '{}' berhasil diunduh ke {:?}",
+                revision_id, target_path
+            );
+            println!("{}", target_path.display());
+        }
+    }
+    Ok(())
+}
+
 async fn handle_mcp(action: McpCommands) -> Result<()> {
     match action {
         McpCommands::Serve => {
@@ -762,4 +1421,397 @@ async fn handle_mcp(action: McpCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_search_multi_word_unquoted() {
+        let cli = Cli::try_parse_from(["gdrive", "search", "iboss", "v2"]).unwrap();
+        match cli.command {
+            Commands::Search { query, .. } => {
+                assert_eq!(query, vec!["iboss", "v2"]);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_single_quoted_word() {
+        let cli = Cli::try_parse_from(["gdrive", "search", "iboss v2"]).unwrap();
+        match cli.command {
+            Commands::Search { query, .. } => {
+                assert_eq!(query, vec!["iboss v2"]);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_empty_query_with_flags() {
+        let cli = Cli::try_parse_from(["gdrive", "search", "--folder", "root"]).unwrap();
+        match cli.command {
+            Commands::Search { query, folder, .. } => {
+                assert!(query.is_empty());
+                assert_eq!(folder.as_deref(), Some("root"));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_info_command_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "info", "file_123", "--json"]).unwrap();
+        match cli.command {
+            Commands::Info { file_id, json } => {
+                assert_eq!(file_id, "file_123");
+                assert!(json);
+            }
+            _ => panic!("Expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_copy_command_parsing() {
+        let cli = Cli::try_parse_from([
+            "gdrive",
+            "copy",
+            "file_123",
+            "--name",
+            "My Copy.md",
+            "--parent",
+            "folder_456",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Copy {
+                file_id,
+                name,
+                parent,
+                json,
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(name.as_deref(), Some("My Copy.md"));
+                assert_eq!(parent.as_deref(), Some("folder_456"));
+                assert!(!json);
+            }
+            _ => panic!("Expected Copy command"),
+        }
+    }
+
+    #[test]
+    fn test_share_command_parsing() {
+        let cli = Cli::try_parse_from([
+            "gdrive",
+            "share",
+            "file_123",
+            "--role",
+            "writer",
+            "--target-type",
+            "user",
+            "--email",
+            "test@example.com",
+            "--notification",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Share {
+                file_id,
+                role,
+                target_type,
+                email,
+                domain: _,
+                notification,
+                json,
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(role, "writer");
+                assert_eq!(target_type, "user");
+                assert_eq!(email.as_deref(), Some("test@example.com"));
+                assert!(notification);
+                assert!(json);
+            }
+            _ => panic!("Expected Share command"),
+        }
+    }
+
+    #[test]
+    fn test_share_command_defaults() {
+        let cli = Cli::try_parse_from(["gdrive", "share", "file_123"]).unwrap();
+        match cli.command {
+            Commands::Share {
+                file_id,
+                role,
+                target_type,
+                email,
+                domain,
+                notification,
+                json,
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(role, "reader");
+                assert_eq!(target_type, "anyone");
+                assert_eq!(email, None);
+                assert!(!notification);
+                assert_eq!(domain, None);
+                assert!(!json);
+            }
+            _ => panic!("Expected Share command"),
+        }
+    }
+
+    #[test]
+    fn test_permissions_list_parsing() {
+        let cli =
+            Cli::try_parse_from(["gdrive", "permissions", "list", "file_123", "--json"]).unwrap();
+        match cli.command {
+            Commands::Permissions {
+                action: PermissionsCommands::List { file_id, json },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert!(json);
+            }
+            _ => panic!("Expected Permissions List command"),
+        }
+    }
+
+    #[test]
+    fn test_permissions_revoke_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "permissions", "revoke", "file_123", "perm_456"])
+            .unwrap();
+        match cli.command {
+            Commands::Permissions {
+                action:
+                    PermissionsCommands::Revoke {
+                        file_id,
+                        permission_id,
+                    },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(permission_id, "perm_456");
+            }
+            _ => panic!("Expected Permissions Revoke command"),
+        }
+    }
+
+    #[test]
+    fn test_comments_list_parsing() {
+        let cli =
+            Cli::try_parse_from(["gdrive", "comments", "list", "file_123", "--json"]).unwrap();
+        match cli.command {
+            Commands::Comments {
+                action:
+                    CommentsCommands::List {
+                        file_id,
+                        limit,
+                        json,
+                    },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(limit, 50);
+                assert!(json);
+            }
+            _ => panic!("Expected Comments List command"),
+        }
+    }
+
+    #[test]
+    fn test_comments_add_parsing() {
+        let cli =
+            Cli::try_parse_from(["gdrive", "comments", "add", "file_123", "Nice work!"]).unwrap();
+        match cli.command {
+            Commands::Comments {
+                action:
+                    CommentsCommands::Add {
+                        file_id,
+                        content,
+                        json,
+                    },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(content, "Nice work!");
+                assert!(!json);
+            }
+            _ => panic!("Expected Comments Add command"),
+        }
+    }
+
+    #[test]
+    fn test_comments_resolve_parsing() {
+        let cli =
+            Cli::try_parse_from(["gdrive", "comments", "resolve", "file_123", "comm_456"]).unwrap();
+        match cli.command {
+            Commands::Comments {
+                action:
+                    CommentsCommands::Resolve {
+                        file_id,
+                        comment_id,
+                    },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(comment_id, "comm_456");
+            }
+            _ => panic!("Expected Comments Resolve command"),
+        }
+    }
+
+    #[test]
+    fn test_trash_shortcut_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "trash", "file_abc"]).unwrap();
+        match cli.command {
+            Commands::Trash { action, file_id } => {
+                assert!(action.is_none());
+                assert_eq!(file_id.as_deref(), Some("file_abc"));
+            }
+            _ => panic!("Expected Trash shortcut command"),
+        }
+    }
+
+    #[test]
+    fn test_trash_subcommands_parsing() {
+        let cli_list = Cli::try_parse_from(["gdrive", "trash", "list", "--json"]).unwrap();
+        match cli_list.command {
+            Commands::Trash { action, file_id } => {
+                assert!(file_id.is_none());
+                match action.unwrap() {
+                    TrashCommands::List { limit, json, .. } => {
+                        assert_eq!(limit, 50);
+                        assert!(json);
+                    }
+                    _ => panic!("Expected Trash List subcommand"),
+                }
+            }
+            _ => panic!("Expected Trash command"),
+        }
+
+        let cli_restore = Cli::try_parse_from(["gdrive", "trash", "restore", "file_xyz"]).unwrap();
+        match cli_restore.command {
+            Commands::Trash { action, file_id } => {
+                assert!(file_id.is_none());
+                match action.unwrap() {
+                    TrashCommands::Restore { file_id } => {
+                        assert_eq!(file_id, "file_xyz");
+                    }
+                    _ => panic!("Expected Trash Restore subcommand"),
+                }
+            }
+            _ => panic!("Expected Trash command"),
+        }
+
+        let cli_empty = Cli::try_parse_from(["gdrive", "trash", "empty", "--yes"]).unwrap();
+        match cli_empty.command {
+            Commands::Trash { action, file_id } => {
+                assert!(file_id.is_none());
+                match action.unwrap() {
+                    TrashCommands::Empty { yes } => {
+                        assert!(yes);
+                    }
+                    _ => panic!("Expected Trash Empty subcommand"),
+                }
+            }
+            _ => panic!("Expected Trash command"),
+        }
+    }
+
+    #[test]
+    fn test_revisions_list_parsing() {
+        let cli =
+            Cli::try_parse_from(["gdrive", "revisions", "list", "file_123", "--json"]).unwrap();
+        match cli.command {
+            Commands::Revisions {
+                action: RevisionsCommands::List { file_id, json },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert!(json);
+            }
+            _ => panic!("Expected Revisions List command"),
+        }
+    }
+
+    #[test]
+    fn test_revisions_download_parsing() {
+        let cli = Cli::try_parse_from([
+            "gdrive",
+            "revisions",
+            "download",
+            "file_123",
+            "rev_456",
+            "-o",
+            "out.pdf",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Revisions {
+                action:
+                    RevisionsCommands::Download {
+                        file_id,
+                        revision_id,
+                        output,
+                    },
+            } => {
+                assert_eq!(file_id, "file_123");
+                assert_eq!(revision_id, "rev_456");
+                assert_eq!(output, Some(PathBuf::from("out.pdf")));
+            }
+            _ => panic!("Expected Revisions Download command"),
+        }
+    }
+
+    #[test]
+    fn test_global_profile_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "--profile", "work", "info", "file_123"]).unwrap();
+        assert_eq!(cli.profile.as_deref(), Some("work"));
+        match cli.command {
+            Commands::Info { file_id, .. } => {
+                assert_eq!(file_id, "file_123");
+            }
+            _ => panic!("Expected Info command"),
+        }
+    }
+
+    #[test]
+    fn test_auth_profile_subcommands_parsing() {
+        let cli_list = Cli::try_parse_from(["gdrive", "auth", "profile", "list"]).unwrap();
+        match cli_list.command {
+            Commands::Auth {
+                action: AuthCommands::Profile { action },
+            } => match action {
+                ProfileCommands::List => {}
+                _ => panic!("Expected Profile List subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+
+        let cli_switch =
+            Cli::try_parse_from(["gdrive", "auth", "profile", "switch", "work"]).unwrap();
+        match cli_switch.command {
+            Commands::Auth {
+                action: AuthCommands::Profile { action },
+            } => match action {
+                ProfileCommands::Switch { name } => {
+                    assert_eq!(name, "work");
+                }
+                _ => panic!("Expected Profile Switch subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+
+        let cli_remove =
+            Cli::try_parse_from(["gdrive", "auth", "profile", "remove", "work"]).unwrap();
+        match cli_remove.command {
+            Commands::Auth {
+                action: AuthCommands::Profile { action },
+            } => match action {
+                ProfileCommands::Remove { name } => {
+                    assert_eq!(name, "work");
+                }
+                _ => panic!("Expected Profile Remove subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
 }
