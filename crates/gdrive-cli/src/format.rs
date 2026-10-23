@@ -1,56 +1,8 @@
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
+pub use gdrive_core::{format_date, format_mime, format_size};
 use gdrive_core::{
     DriveAbout, DriveComment, DriveFile, DrivePermission, DriveRevision, ProfileStatusInfo,
 };
-
-pub fn format_size(bytes_str: Option<&str>) -> String {
-    let bytes = match bytes_str.and_then(|s| s.parse::<u64>().ok()) {
-        Some(b) => b,
-        None => return "-".to_string(),
-    };
-
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-pub fn format_mime(mime: &str) -> (&'static str, &'static str) {
-    match mime {
-        "application/vnd.google-apps.folder" => ("📁", "Folder"),
-        "application/vnd.google-apps.document" => ("📝", "Google Doc"),
-        "application/vnd.google-apps.spreadsheet" => ("📊", "Google Sheet"),
-        "application/vnd.google-apps.presentation" => ("📽️", "Google Slides"),
-        "application/pdf" => ("📄", "PDF"),
-        m if m.starts_with("image/") => ("🖼️", "Image"),
-        m if m.starts_with("video/") => ("🎬", "Video"),
-        m if m.starts_with("audio/") => ("🎵", "Audio"),
-        m if m.starts_with("text/") => ("📜", "Text"),
-        "application/zip" | "application/x-tar" | "application/gzip" => ("📦", "Archive"),
-        _ => ("📎", "File"),
-    }
-}
-
-pub fn format_date(iso_date: Option<&str>) -> String {
-    match iso_date {
-        Some(d) if d.len() >= 16 => {
-            let date = &d[..10];
-            let time = &d[11..16];
-            format!("{} {}", date, time)
-        }
-        Some(d) => d.to_string(),
-        None => "-".to_string(),
-    }
-}
 
 fn apply_table_arrangement(table: &mut Table) {
     if table.width().unwrap_or(0) >= 60 {
@@ -484,6 +436,44 @@ pub fn render_profiles_table(profiles: &[ProfileStatusInfo]) -> String {
         ]);
     }
 
+    table.to_string()
+}
+
+pub fn render_doctor_table(report: &gdrive_core::DoctorReport) -> String {
+    use gdrive_core::DoctorStatus;
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("Komponen")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+        Cell::new("Detail / Rekomendasi Solusi")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+    ]);
+
+    for c in &report.checks {
+        let status_cell = match c.status {
+            DoctorStatus::Ok => Cell::new("[OK]")
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
+            DoctorStatus::Warn => Cell::new("[WARN]")
+                .fg(Color::Yellow)
+                .add_attribute(Attribute::Bold),
+            DoctorStatus::Fail => Cell::new("[FAIL]")
+                .fg(Color::Red)
+                .add_attribute(Attribute::Bold),
+        };
+        table.add_row(vec![
+            Cell::new(&c.component).fg(Color::White),
+            status_cell,
+            Cell::new(&c.detail),
+        ]);
+    }
     table.to_string()
 }
 

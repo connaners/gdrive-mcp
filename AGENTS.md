@@ -96,3 +96,29 @@ When adding a new tool to `gdrive-mcp`:
 2. Add the client method in `crates/gdrive-core/src/client.rs`.
 3. Add the `#[tool(...)]` method in `crates/gdrive-mcp/src/server.rs` under `impl GDriveMcpServer`.
 4. Update `get_info().with_instructions(...)` in `server.rs` so LLMs understand when to call the new tool.
+
+---
+
+## 6. Testing & Quality Verification Blueprint ("Tiap Ada Fitur Baru")
+
+When adding any new feature, command, or capability:
+1. **Layer 1: Core API (`crates/gdrive-core`)**:
+   - Add HTTP method in `client.rs` using `drive_api_base()` (or `upload_api_base()`).
+   - Add data models in `models.rs` with `#[derive(Serialize, Deserialize)]`.
+   - Write unit test in `models.rs` or `client.rs` verifying JSON deserialization and error mapping.
+2. **Layer 2: CLI Subcommand (`crates/gdrive-cli`)**:
+   - Add variant in `enum Commands` in `main.rs`.
+   - Add CLI argument parsing test in `main.rs`.
+   - Add integration test in `crates/gdrive-cli/tests/cli_e2e.rs` using `assert_cmd` and `GDRIVE_CONFIG_DIR`.
+3. **Layer 3: MCP Tool (`crates/gdrive-mcp`)**:
+   - Add argument struct in `crates/gdrive-mcp/src/models.rs` with doc-comments on **every field** (Rule 2).
+   - Add `#[tool(...)]` method in `crates/gdrive-mcp/src/server.rs`.
+   - *Automatic Enforcement*: `crates/gdrive-cli/tests/mcp_stdio_contract.rs` automatically iterates over all tools discovered via `tools/list` on every run to enforce Rule 1 (clean stdout) and Rule 2 (safe schemas).
+4. **Layer 4: TUI Modal / Action (`crates/gdrive-tui`)**:
+   - If adding a modal/view: add variant to `enum CurrentView` in `app.rs`.
+   - Implement rendering in `crates/gdrive-tui/src/ui/` and wire in `ui/mod.rs`.
+   - Add headless render test case in `crates/gdrive-tui/tests/tui_render_test.rs` using `TestBackend`.
+   - Add mock data in `terminal.rs` under demo mode (`GDRIVE_TUI_DEMO=1`) so developers can visually verify it.
+5. **Pre-PR Quality Verification**:
+   - Run `./scripts/smoke_test.sh`:
+     - Checks format (`cargo fmt`), linter (`cargo clippy`), unit tests, CLI tests, MCP contract tests, TUI tests, security guard, and installer script.

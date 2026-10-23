@@ -9,8 +9,25 @@ use futures_util::Stream;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
-const UPLOAD_API_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
+pub fn drive_api_base() -> String {
+    let raw = std::env::var("GDRIVE_API_BASE_URL").unwrap_or_default();
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        "https://www.googleapis.com/drive/v3".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn upload_api_base() -> String {
+    let raw = std::env::var("GDRIVE_UPLOAD_API_BASE_URL").unwrap_or_default();
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        "https://www.googleapis.com/upload/drive/v3".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 pub type DownloadByteStream = Box<dyn Stream<Item = reqwest::Result<Bytes>> + Unpin + Send>;
 
@@ -247,7 +264,7 @@ impl GDriveClient {
             .order_by
             .unwrap_or_else(|| "folder,name,modifiedTime desc".to_string());
 
-        let url = format!("{}/files", DRIVE_API_BASE);
+        let url = format!("{}/files", drive_api_base());
         let resp = self
             .send_with_retry(|t| {
                 let mut req = self.http.get(&url).bearer_auth(t).query(&[
@@ -370,7 +387,7 @@ impl GDriveClient {
     pub async fn read_file(&self, raw_id: &str) -> Result<String> {
         let file_id = Self::clean_file_id(raw_id);
         // 1. Ambil metadata file dulu untuk cek mimeType
-        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_url = format!("{}/files/{}", drive_api_base(), file_id);
         let meta_resp = self
             .send_with_retry(|t| {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
@@ -399,7 +416,7 @@ impl GDriveClient {
 
         // 3. Auto-Export Google Workspace Docs, Sheets, & Slides
         let text_content = if meta.mime_type == "application/vnd.google-apps.document" {
-            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
@@ -410,7 +427,7 @@ impl GDriveClient {
                 .await?;
             resp.text().await?
         } else if meta.mime_type == "application/vnd.google-apps.spreadsheet" {
-            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
@@ -421,7 +438,7 @@ impl GDriveClient {
                 .await?;
             resp.text().await?
         } else if meta.mime_type == "application/vnd.google-apps.presentation" {
-            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
@@ -459,7 +476,8 @@ impl GDriveClient {
             // Unduh regular text file (misal .md, .txt, .json, source code)
             let download_url = format!(
                 "{}/files/{}?alt=media&supportsAllDrives=true",
-                DRIVE_API_BASE, file_id
+                drive_api_base(),
+                file_id
             );
             let resp = self
                 .send_with_retry(|t| self.http.get(&download_url).bearer_auth(t))
@@ -492,7 +510,7 @@ impl GDriveClient {
     pub async fn create_file(&self, opts: CreateFileOptions) -> Result<DriveFile> {
         let upload_url = format!(
             "{}/files?uploadType=multipart&supportsAllDrives=true",
-            UPLOAD_API_BASE
+            upload_api_base()
         );
 
         let target_mime = if opts.as_google_doc {
@@ -576,7 +594,8 @@ impl GDriveClient {
 
         let upload_url = format!(
             "{}/files/{}?uploadType=media&supportsAllDrives=true",
-            UPLOAD_API_BASE, opts.file_id
+            upload_api_base(),
+            opts.file_id
         );
 
         let content_bytes = final_content.into_bytes();
@@ -602,7 +621,7 @@ impl GDriveClient {
 
     /// Membuat folder baru di Google Drive (pribadi atau Shared Drives)
     pub async fn create_folder(&self, name: &str, parent_id: Option<&str>) -> Result<DriveFile> {
-        let url = format!("{}/files?supportsAllDrives=true", DRIVE_API_BASE);
+        let url = format!("{}/files?supportsAllDrives=true", drive_api_base());
 
         let mut body = serde_json::json!({
             "name": name,
@@ -639,7 +658,8 @@ impl GDriveClient {
         let file_id = Self::clean_file_id(raw_id);
         let url = format!(
             "{}/files/{}?supportsAllDrives=true",
-            DRIVE_API_BASE, file_id
+            drive_api_base(),
+            file_id
         );
 
         let body = serde_json::json!({
@@ -672,7 +692,7 @@ impl GDriveClient {
         let file_id = Self::clean_file_id(raw_id);
         let url = format!(
             "{}/files/{}?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime",
-            DRIVE_API_BASE, file_id
+            drive_api_base(), file_id
         );
 
         let body = serde_json::json!({
@@ -704,7 +724,7 @@ impl GDriveClient {
     ) -> Result<DriveFileList> {
         let limit = page_size.unwrap_or(50).clamp(1, 100);
         let limit_str = limit.to_string();
-        let url = format!("{}/files", DRIVE_API_BASE);
+        let url = format!("{}/files", drive_api_base());
 
         let resp = self
             .send_with_retry(|t| {
@@ -738,7 +758,7 @@ impl GDriveClient {
 
     /// Mengosongkan tempat sampah Google Drive (permanently purge trashed files)
     pub async fn empty_trash(&self) -> Result<()> {
-        let url = format!("{}/files/trash?supportsAllDrives=true", DRIVE_API_BASE);
+        let url = format!("{}/files/trash?supportsAllDrives=true", drive_api_base());
         let resp = self
             .send_mutation(|t| self.http.delete(&url).bearer_auth(t))
             .await
@@ -757,7 +777,7 @@ impl GDriveClient {
         let file_id = Self::clean_file_id(raw_id);
         let url = format!(
             "{}/files/{}?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,modifiedTime",
-            DRIVE_API_BASE, file_id
+            drive_api_base(), file_id
         );
 
         let body = serde_json::json!({
@@ -795,7 +815,7 @@ impl GDriveClient {
         let file_id = Self::clean_file_id(raw_id);
         let url = format!(
             "{}/files/{}/copy?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime",
-            DRIVE_API_BASE, file_id
+            drive_api_base(), file_id
         );
 
         let mut body = serde_json::Map::new();
@@ -850,7 +870,7 @@ impl GDriveClient {
             Some(old_p) => Self::clean_file_id(old_p).to_string(),
             None => {
                 // Ambil daftar parents saat ini agar bisa dilepas dari lokasi lama
-                let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+                let meta_url = format!("{}/files/{}", drive_api_base(), file_id);
                 let meta_resp = self
                     .send_with_retry(|t| {
                         self.http
@@ -880,7 +900,7 @@ impl GDriveClient {
 
         let mut url = format!(
             "{}/files/{}?addParents={}&supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,modifiedTime",
-            DRIVE_API_BASE, file_id, target_parent
+            drive_api_base(), file_id, target_parent
         );
         if !remove_parents.is_empty() {
             url.push_str(&format!("&removeParents={}", remove_parents));
@@ -912,7 +932,7 @@ impl GDriveClient {
         page_size: Option<u32>,
     ) -> Result<Vec<crate::models::DriveItem>> {
         let limit = page_size.unwrap_or(50);
-        let url = format!("{}/drives", DRIVE_API_BASE);
+        let url = format!("{}/drives", drive_api_base());
 
         let resp = self
             .send_with_retry(|t| {
@@ -936,7 +956,7 @@ impl GDriveClient {
     /// Mengambil metadata file berdasarkan ID jika ada
     pub async fn get_file_metadata(&self, raw_id: &str) -> Result<DriveFile> {
         let file_id = Self::clean_file_id(raw_id);
-        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_url = format!("{}/files/{}", drive_api_base(), file_id);
         let meta_resp = self
             .send_with_retry(|t| {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
@@ -962,7 +982,7 @@ impl GDriveClient {
     /// Mengambil daftar permission (hak akses) dari suatu file atau folder di Google Drive
     pub async fn list_permissions(&self, raw_id: &str) -> Result<Vec<DrivePermission>> {
         let file_id = Self::clean_file_id(raw_id);
-        let url = format!("{}/files/{}/permissions", DRIVE_API_BASE, file_id);
+        let url = format!("{}/files/{}/permissions", drive_api_base(), file_id);
         let resp = self
             .send_with_retry(|t| {
                 self.http.get(&url).bearer_auth(t).query(&[
@@ -992,7 +1012,7 @@ impl GDriveClient {
         opts: CreatePermissionOptions,
     ) -> Result<DrivePermission> {
         let file_id = Self::clean_file_id(raw_id);
-        let url = format!("{}/files/{}/permissions", DRIVE_API_BASE, file_id);
+        let url = format!("{}/files/{}/permissions", drive_api_base(), file_id);
 
         let mut body = serde_json::json!({
             "role": opts.role,
@@ -1040,7 +1060,9 @@ impl GDriveClient {
         let perm_id = Self::validate_drive_id(permission_id)?;
         let url = format!(
             "{}/files/{}/permissions/{}",
-            DRIVE_API_BASE, file_id, perm_id
+            drive_api_base(),
+            file_id,
+            perm_id
         );
         let resp = self
             .send_mutation(|t| {
@@ -1069,7 +1091,7 @@ impl GDriveClient {
         let file_id = Self::validate_drive_id(raw_id)?;
         let limit = page_size.unwrap_or(50).clamp(1, 100);
         let limit_str = limit.to_string();
-        let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
+        let url = format!("{}/files/{}/comments", drive_api_base(), file_id);
 
         let resp = self
             .send_with_retry(|t| {
@@ -1101,7 +1123,7 @@ impl GDriveClient {
         content: &str,
     ) -> Result<crate::models::DriveComment> {
         let file_id = Self::validate_drive_id(raw_id)?;
-        let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
+        let url = format!("{}/files/{}/comments", drive_api_base(), file_id);
 
         let body = serde_json::json!({
             "content": content
@@ -1143,7 +1165,9 @@ impl GDriveClient {
         let comm_id = Self::validate_drive_id(comment_id)?;
         let replies_url = format!(
             "{}/files/{}/comments/{}/replies",
-            DRIVE_API_BASE, file_id, comm_id
+            drive_api_base(),
+            file_id,
+            comm_id
         );
 
         let body = serde_json::json!({
@@ -1167,7 +1191,12 @@ impl GDriveClient {
         }
 
         // Ambil status comment terbaru setelah di-resolve
-        let comment_url = format!("{}/files/{}/comments/{}", DRIVE_API_BASE, file_id, comm_id);
+        let comment_url = format!(
+            "{}/files/{}/comments/{}",
+            drive_api_base(),
+            file_id,
+            comm_id
+        );
         let comment_resp = self
             .send_with_retry(|t| {
                 self.http.get(&comment_url).bearer_auth(t).query(&[
@@ -1224,7 +1253,7 @@ impl GDriveClient {
     /// Mengambil daftar riwayat revisi (versi) dari file
     pub async fn list_revisions(&self, raw_id: &str) -> Result<Vec<crate::models::DriveRevision>> {
         let file_id = Self::validate_drive_id(raw_id)?;
-        let url = format!("{}/files/{}/revisions", DRIVE_API_BASE, file_id);
+        let url = format!("{}/files/{}/revisions", drive_api_base(), file_id);
 
         let resp = self
             .send_with_retry(|t| {
@@ -1261,7 +1290,9 @@ impl GDriveClient {
 
         let url = format!(
             "{}/files/{}/revisions/{}?alt=media&supportsAllDrives=true",
-            DRIVE_API_BASE, file_id, rev_id
+            drive_api_base(),
+            file_id,
+            rev_id
         );
 
         let resp = self
@@ -1282,7 +1313,7 @@ impl GDriveClient {
     pub async fn download_file_bytes(&self, raw_id: &str) -> Result<(String, Vec<u8>)> {
         let file_id = Self::clean_file_id(raw_id);
         // Ambil metadata dulu untuk nama dan mimeType
-        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_url = format!("{}/files/{}", drive_api_base(), file_id);
         let meta_resp = self
             .send_with_retry(|t| {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
@@ -1302,7 +1333,7 @@ impl GDriveClient {
 
         // Jika Google Docs, ekspor ke PDF atau teks
         if meta.mime_type == "application/vnd.google-apps.document" {
-            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
@@ -1318,7 +1349,8 @@ impl GDriveClient {
         // Regular file media download
         let download_url = format!(
             "{}/files/{}?alt=media&supportsAllDrives=true",
-            DRIVE_API_BASE, file_id
+            drive_api_base(),
+            file_id
         );
         let resp = self
             .send_with_retry(|t| self.http.get(&download_url).bearer_auth(t))
@@ -1335,7 +1367,7 @@ impl GDriveClient {
     /// Mengambil file sebagai stream byte untuk penghematan memori dan rendering progress bar
     pub async fn download_file_stream(&self, raw_id: &str) -> Result<DownloadStream> {
         let file_id = Self::clean_file_id(raw_id);
-        let meta_url = format!("{}/files/{}", DRIVE_API_BASE, file_id);
+        let meta_url = format!("{}/files/{}", drive_api_base(), file_id);
         let meta_resp = self
             .send_with_retry(|t| {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
@@ -1367,7 +1399,7 @@ impl GDriveClient {
             };
 
         if let Some((export_mime, ext, out_mime)) = workspace_export {
-            let export_url = format!("{}/files/{}/export", DRIVE_API_BASE, file_id);
+            let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
             let resp = self
                 .send_with_retry(|t| {
                     self.http
@@ -1399,7 +1431,8 @@ impl GDriveClient {
         // Regular file media download
         let download_url = format!(
             "{}/files/{}?alt=media&supportsAllDrives=true",
-            DRIVE_API_BASE, file_id
+            drive_api_base(),
+            file_id
         );
         let resp = self
             .send_with_retry(|t| self.http.get(&download_url).bearer_auth(t))
@@ -1460,7 +1493,7 @@ impl GDriveClient {
 
         let upload_url = format!(
             "{}/files?uploadType=multipart&supportsAllDrives=true",
-            UPLOAD_API_BASE
+            upload_api_base()
         );
 
         let target_mime = if as_doc {
@@ -1533,7 +1566,7 @@ impl GDriveClient {
 
     /// Mengambil informasi akun Google Drive aktif dan kuota penyimpanan (storage quota)
     pub async fn get_about(&self) -> Result<DriveAbout> {
-        let url = format!("{}/about", DRIVE_API_BASE);
+        let url = format!("{}/about", drive_api_base());
         let resp = self
             .send_with_retry(|t| {
                 self.http
