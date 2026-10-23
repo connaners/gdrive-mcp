@@ -149,6 +149,38 @@ pub struct DriveRevisionList {
     pub next_page_token: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveAboutUser {
+    #[serde(rename = "displayName", default)]
+    pub display_name: Option<String>,
+    #[serde(rename = "emailAddress", default)]
+    pub email_address: Option<String>,
+    #[serde(rename = "permissionId", default)]
+    pub permission_id: Option<String>,
+    #[serde(rename = "photoLink", default)]
+    pub photo_link: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveAboutStorageQuota {
+    #[serde(default)]
+    pub limit: Option<String>,
+    #[serde(default)]
+    pub usage: Option<String>,
+    #[serde(rename = "usageInDrive", default)]
+    pub usage_in_drive: Option<String>,
+    #[serde(rename = "usageInDriveTrash", default)]
+    pub usage_in_drive_trash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveAbout {
+    #[serde(default)]
+    pub user: Option<DriveAboutUser>,
+    #[serde(rename = "storageQuota", default)]
+    pub storage_quota: Option<DriveAboutStorageQuota>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +292,35 @@ mod tests {
         assert_eq!(r.size.as_deref(), Some("1048576"));
         let user = r.last_modifying_user.as_ref().unwrap();
         assert_eq!(user.display_name.as_deref(), Some("Alice Admin"));
+    }
+
+    #[test]
+    fn test_about_model_deserialization() {
+        let json_data = r#"{
+            "user": {
+                "displayName": "Ada Lovelace",
+                "emailAddress": "ada@example.com",
+                "permissionId": "perm-123",
+                "photoLink": "https://example.com/photo.jpg"
+            },
+            "storageQuota": {
+                "limit": "16106127360",
+                "usage": "5368709120",
+                "usageInDrive": "4294967296",
+                "usageInDriveTrash": "1073741824"
+            }
+        }"#;
+
+        let about: DriveAbout = serde_json::from_str(json_data).unwrap();
+        let user = about.user.as_ref().unwrap();
+        assert_eq!(user.display_name.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(user.email_address.as_deref(), Some("ada@example.com"));
+        assert_eq!(user.permission_id.as_deref(), Some("perm-123"));
+
+        let quota = about.storage_quota.as_ref().unwrap();
+        assert_eq!(quota.limit.as_deref(), Some("16106127360"));
+        assert_eq!(quota.usage.as_deref(), Some("5368709120"));
+        assert_eq!(quota.usage_in_drive.as_deref(), Some("4294967296"));
+        assert_eq!(quota.usage_in_drive_trash.as_deref(), Some("1073741824"));
     }
 }

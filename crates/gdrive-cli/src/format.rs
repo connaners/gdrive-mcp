@@ -1,5 +1,7 @@
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
-use gdrive_core::{DriveComment, DriveFile, DrivePermission, DriveRevision};
+use gdrive_core::{
+    DriveAbout, DriveComment, DriveFile, DrivePermission, DriveRevision, ProfileStatusInfo,
+};
 
 pub fn format_size(bytes_str: Option<&str>) -> String {
     let bytes = match bytes_str.and_then(|s| s.parse::<u64>().ok()) {
@@ -335,6 +337,156 @@ pub fn render_revisions_table(revs: &[DriveRevision]) -> String {
     table.to_string()
 }
 
+pub fn render_storage_bar(usage: u64, limit: u64) -> String {
+    if limit == 0 {
+        return "-".to_string();
+    }
+    let pct = (usage as f64 / limit as f64) * 100.0;
+    let clamped_pct = pct.clamp(0.0, 100.0);
+    let total_slots: usize = 20;
+    let filled_slots = ((clamped_pct / 100.0) * total_slots as f64).round() as usize;
+    let empty_slots = total_slots.saturating_sub(filled_slots);
+    let bar: String = "█".repeat(filled_slots) + &"░".repeat(empty_slots);
+    format!("[{}] {:.1}%", bar, pct)
+}
+
+pub fn render_about(about: &DriveAbout) -> String {
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+
+    table.set_header(vec![
+        Cell::new("Informasi Akun")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Detail")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+    ]);
+
+    let user_name = about
+        .user
+        .as_ref()
+        .and_then(|u| u.display_name.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("-");
+    let user_email = about
+        .user
+        .as_ref()
+        .and_then(|u| u.email_address.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("-");
+
+    table.add_row(vec![Cell::new("Nama Pengguna"), Cell::new(user_name)]);
+    table.add_row(vec![Cell::new("Alamat Email"), Cell::new(user_email)]);
+
+    if let Some(quota) = &about.storage_quota {
+        let limit_str = if let Some(lim) = quota.limit.as_deref() {
+            format_size(Some(lim))
+        } else {
+            "Tak terbatas".to_string()
+        };
+        let usage_str = format_size(quota.usage.as_deref());
+        let drive_str = format_size(quota.usage_in_drive.as_deref());
+        let trash_str = format_size(quota.usage_in_drive_trash.as_deref());
+
+        table.add_row(vec![Cell::new("Total Penggunaan"), Cell::new(usage_str)]);
+        table.add_row(vec![Cell::new("Batas Penyimpanan"), Cell::new(limit_str)]);
+        table.add_row(vec![Cell::new("Penggunaan Drive"), Cell::new(drive_str)]);
+        table.add_row(vec![Cell::new("Penggunaan Trash"), Cell::new(trash_str)]);
+
+        if let (Some(u), Some(l)) = (
+            quota.usage.as_deref().and_then(|s| s.parse::<u64>().ok()),
+            quota.limit.as_deref().and_then(|s| s.parse::<u64>().ok()),
+        ) {
+            let bar = render_storage_bar(u, l);
+            table.add_row(vec![Cell::new("Kapasitas Terpakai"), Cell::new(bar)]);
+        }
+    }
+
+    table.to_string()
+}
+
+pub fn render_profiles_table(profiles: &[ProfileStatusInfo]) -> String {
+    if profiles.is_empty() {
+        return "Tidak ada profil yang terdaftar.".to_string();
+    }
+
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("Profile")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+        Cell::new("Akun Google")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+        Cell::new("Masa Berlaku")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Magenta),
+        Cell::new("Lokasi Token")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Blue),
+    ]);
+
+    for p in profiles {
+        let status_cell = if p.is_active {
+            Cell::new("* Aktif")
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold)
+        } else {
+            Cell::new("-").fg(Color::DarkGrey)
+        };
+
+        let name = p.display_name.as_deref().filter(|s| !s.trim().is_empty());
+        let email = p.email.as_deref().filter(|s| !s.trim().is_empty());
+        let account_str = if p.is_authenticated {
+            match (name, email) {
+                (Some(name), Some(email)) => format!("{} ({})", name, email),
+                (None, Some(email)) => email.to_string(),
+                (Some(name), None) => name.to_string(),
+                (None, None) => "Terhubung (tanpa detail email)".to_string(),
+            }
+        } else {
+            "Belum terhubung".to_string()
+        };
+
+        let expiry_str = if p.is_authenticated {
+            if let Some(secs) = p.expires_in_seconds {
+                if secs >= 3600 {
+                    format!("{}j {}m tersisa", secs / 3600, (secs % 3600) / 60)
+                } else if secs >= 60 {
+                    format!("{}m tersisa", secs / 60)
+                } else if secs > 0 {
+                    format!("{}d tersisa", secs)
+                } else {
+                    "Kedaluwarsa (auto-refresh)".to_string()
+                }
+            } else {
+                "Auto-refresh aktif".to_string()
+            }
+        } else {
+            "Belum login".to_string()
+        };
+
+        let path_str = p.token_path.to_string_lossy().to_string();
+
+        table.add_row(vec![
+            Cell::new(&p.name).add_attribute(Attribute::Bold),
+            status_cell,
+            Cell::new(account_str),
+            Cell::new(expiry_str),
+            Cell::new(path_str).fg(Color::DarkGrey),
+        ]);
+    }
+
+    table.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,5 +627,70 @@ mod tests {
 
         let empty_out = render_revisions_table(&[]);
         assert_eq!(empty_out, "Tidak ada riwayat revisi pada file ini.");
+    }
+
+    #[test]
+    fn test_render_storage_bar() {
+        let bar = render_storage_bar(5, 10);
+        assert!(bar.contains("50.0%"));
+        assert!(bar.contains("██████████░░░░░░░░░░"));
+    }
+
+    #[test]
+    fn test_render_profiles_table() {
+        let list = vec![
+            ProfileStatusInfo {
+                name: "default".to_string(),
+                is_active: true,
+                is_authenticated: true,
+                email: Some("me@gmail.com".to_string()),
+                display_name: Some("Me".to_string()),
+                expires_in_seconds: Some(3500),
+                token_path: std::path::PathBuf::from("/path/to/token.json"),
+            },
+            ProfileStatusInfo {
+                name: "work".to_string(),
+                is_active: false,
+                is_authenticated: false,
+                email: None,
+                display_name: None,
+                expires_in_seconds: None,
+                token_path: std::path::PathBuf::from("/path/to/work/token.json"),
+            },
+        ];
+
+        let out = render_profiles_table(&list);
+        assert!(out.contains("default"));
+        assert!(out.contains("* Aktif"));
+        assert!(out.contains("Me (me@gmail.com)"));
+        assert!(out.contains("58m tersisa"));
+        assert!(out.contains("work"));
+        assert!(out.contains("Belum terhubung"));
+        assert!(out.contains("Belum login"));
+    }
+
+    #[test]
+    fn test_render_about() {
+        let about = DriveAbout {
+            user: Some(gdrive_core::DriveAboutUser {
+                display_name: Some("Ada Lovelace".to_string()),
+                email_address: Some("ada@example.com".to_string()),
+                permission_id: None,
+                photo_link: None,
+            }),
+            storage_quota: Some(gdrive_core::DriveAboutStorageQuota {
+                limit: Some("10737418240".to_string()), // 10 GB
+                usage: Some("5368709120".to_string()),  // 5 GB
+                usage_in_drive: Some("4294967296".to_string()),
+                usage_in_drive_trash: Some("1073741824".to_string()),
+            }),
+        };
+
+        let out = render_about(&about);
+        assert!(out.contains("Ada Lovelace"));
+        assert!(out.contains("ada@example.com"));
+        assert!(out.contains("10.00 GB"));
+        assert!(out.contains("5.00 GB"));
+        assert!(out.contains("50.0%"));
     }
 }

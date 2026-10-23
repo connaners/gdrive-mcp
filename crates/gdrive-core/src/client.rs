@@ -1,7 +1,7 @@
 use crate::auth::AuthManager;
 use crate::models::{
-    CreateFileOptions, CreatePermissionOptions, DriveFile, DriveFileList, DrivePermission,
-    DrivePermissionList, SearchFileOptions, UpdateFileOptions,
+    CreateFileOptions, CreatePermissionOptions, DriveAbout, DriveFile, DriveFileList,
+    DrivePermission, DrivePermissionList, SearchFileOptions, UpdateFileOptions,
 };
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
@@ -1529,6 +1529,54 @@ impl GDriveClient {
 
         let created: DriveFile = resp.json().await?;
         Ok(created)
+    }
+
+    /// Mengambil informasi akun Google Drive aktif dan kuota penyimpanan (storage quota)
+    pub async fn get_about(&self) -> Result<DriveAbout> {
+        let url = format!("{}/about", DRIVE_API_BASE);
+        let resp = self
+            .send_with_retry(|t| {
+                self.http
+                    .get(&url)
+                    .bearer_auth(t)
+                    .query(&[("fields", "user,storageQuota")])
+            })
+            .await?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil informasi akun Drive: {}", text);
+        }
+
+        let about: DriveAbout = resp
+            .json()
+            .await
+            .context("Gagal mem-parsing informasi akun Drive")?;
+
+        // Jika token belum menyimpan email / display_name dan client terikat ke profil terkelola,
+        // perbarui token.json profil secara transparan
+        if self.auto_refresh && self.profile.is_some() {
+            if let Some(ref user) = about.user {
+                if let Ok(mut saved) =
+                    AuthManager::load_saved_token_for_profile(self.profile.as_deref())
+                {
+                    let mut changed = false;
+                    if saved.account_email.is_none() && user.email_address.is_some() {
+                        saved.account_email = user.email_address.clone();
+                        changed = true;
+                    }
+                    if saved.display_name.is_none() && user.display_name.is_some() {
+                        saved.display_name = user.display_name.clone();
+                        changed = true;
+                    }
+                    if changed {
+                        let _ =
+                            AuthManager::save_token_for_profile(self.profile.as_deref(), &saved);
+                    }
+                }
+            }
+        }
+        Ok(about)
     }
 }
 
