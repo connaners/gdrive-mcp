@@ -92,9 +92,15 @@ jobs:
                 sudo cp /tmp/gh_2.58.0_linux_amd64/bin/gh /usr/local/bin/
               fi
               echo "Publishing release $CIRCLE_TAG..."
-              gh release create "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 \
-                --title "$CIRCLE_TAG" \
-                --notes "Automated release build by CircleCI"
+              if gh release view "$CIRCLE_TAG" &>/dev/null; then
+                echo "Release $CIRCLE_TAG already exists. Uploading release assets..."
+                gh release upload "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 --clobber
+              else
+                echo "Creating release $CIRCLE_TAG and uploading assets..."
+                gh release create "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 \
+                  --title "$CIRCLE_TAG" \
+                  --notes "Automated release build by CircleCI"
+              fi
             else
               echo "Skipping GitHub release upload (not a tagged build or GITHUB_TOKEN unset)."
             fi
