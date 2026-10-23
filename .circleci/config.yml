@@ -107,10 +107,18 @@ workflows:
             tags:
               only: /.*/
       - build-release:
+          name: build-artifact
+          requires:
+            - test-and-lint
+          filters:
+            branches:
+              only: main
+      - build-release:
+          name: publish-release
           requires:
             - test-and-lint
           filters:
             tags:
               only: /^v.*/
             branches:
-              only: main
+              ignore: /.*/
