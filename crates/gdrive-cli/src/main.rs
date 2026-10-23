@@ -1482,8 +1482,7 @@ async fn handle_self_update(check: bool, changelog: bool, json: bool) -> Result<
             Cell::new(format!("v{}", info.latest_version)),
         ]);
         table.add_row(vec![
-            Cell::new("Update Tersedia")
-                .add_attribute(Attribute::Bold),
+            Cell::new("Update Tersedia").add_attribute(Attribute::Bold),
             Cell::new(status_display).fg(if info.update_available {
                 Color::Yellow
             } else {
@@ -1491,29 +1490,38 @@ async fn handle_self_update(check: bool, changelog: bool, json: bool) -> Result<
             }),
         ]);
         table.add_row(vec![
-            Cell::new("URL Rilis")
-                .add_attribute(Attribute::Bold),
+            Cell::new("URL Rilis").add_attribute(Attribute::Bold),
             Cell::new(&info.release_url),
         ]);
         table.add_row(vec![
-            Cell::new("Tanggal Publikasi")
-                .add_attribute(Attribute::Bold),
+            Cell::new("Tanggal Publikasi").add_attribute(Attribute::Bold),
             Cell::new(info.published_at.as_deref().unwrap_or("-")),
         ]);
 
         println!("{table}");
 
         if changelog {
-            match info.release_notes.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            match info
+                .release_notes
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 Some(notes) => println!("\nCatatan Rilis (v{}):\n{}", info.latest_version, notes),
-                None => println!("\nCatatan Rilis (v{}):\n(Tidak ada catatan rilis)", info.latest_version),
+                None => println!(
+                    "\nCatatan Rilis (v{}):\n(Tidak ada catatan rilis)",
+                    info.latest_version
+                ),
             }
         }
 
         if info.update_available {
             eprintln!("\n💡 Versi baru tersedia! Jalankan 'gdrive self-update' atau 'gdrive upgrade' untuk memperbarui.");
         } else {
-            eprintln!("✅ Anda sudah menggunakan versi terbaru (v{}).", info.current_version);
+            eprintln!(
+                "✅ Anda sudah menggunakan versi terbaru (v{}).",
+                info.current_version
+            );
         }
 
         Ok(())

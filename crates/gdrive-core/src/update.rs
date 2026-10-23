@@ -54,7 +54,7 @@ impl SemVer {
     /// Mem-parse string versi menjadi `SemVer`.
     /// Mengabaikan prefix 'v'/'V', dan mengabaikan sufiks pre-release/build (misal `-beta.1`, `+build`).
     pub fn parse(v: &str) -> Option<Self> {
-        let s = v.trim().trim_start_matches(|c| c == 'v' || c == 'V');
+        let s = v.trim().trim_start_matches(['v', 'V']);
         let core = s.split(['-', '+']).next().unwrap_or(s);
         let mut parts = core.split('.');
         let major = parts.next()?.parse::<u64>().ok()?;
@@ -138,7 +138,10 @@ pub fn extract_binary_from_tar_gz<R: std::io::Read>(
             }
         }
     }
-    anyhow::bail!("Binary '{}' tidak ditemukan di dalam archive tar.gz", binary_name)
+    anyhow::bail!(
+        "Binary '{}' tidak ditemukan di dalam archive tar.gz",
+        binary_name
+    )
 }
 
 /// Memeriksa ketersediaan versi terbaru dari GitHub Releases.
@@ -182,19 +185,16 @@ pub async fn check_for_update(repo: Option<&str>) -> anyhow::Result<UpdateInfo> 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "GitHub API error (HTTP {}): {}",
-            status,
-            text
-        );
+        anyhow::bail!("GitHub API error (HTTP {}): {}", status, text);
     }
 
-    let release: GitHubRelease = resp.json().await.map_err(|e| {
-        anyhow::anyhow!("Gagal mem-parse respon JSON dari GitHub Releases: {}", e)
-    })?;
+    let release: GitHubRelease = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Gagal mem-parse respon JSON dari GitHub Releases: {}", e))?;
 
     let current_ver = env!("CARGO_PKG_VERSION");
-    let latest_ver = release.tag_name.trim_start_matches(|c| c == 'v' || c == 'V');
+    let latest_ver = release.tag_name.trim_start_matches(['v', 'V']);
     let update_available = is_newer_version(current_ver, &release.tag_name);
 
     let matching_asset = find_matching_asset(
@@ -254,15 +254,17 @@ pub async fn execute_self_update(
     })?;
 
     let client = reqwest::Client::builder().build()?;
-    let req = client
-        .get(download_url)
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("gdrive-mcp/{}", env!("CARGO_PKG_VERSION")),
-        );
+    let req = client.get(download_url).header(
+        reqwest::header::USER_AGENT,
+        format!("gdrive-mcp/{}", env!("CARGO_PKG_VERSION")),
+    );
 
     let resp = req.send().await.map_err(|e| {
-        anyhow::anyhow!("Gagal mengunduh asset pembaruan dari '{}': {}", download_url, e)
+        anyhow::anyhow!(
+            "Gagal mengunduh asset pembaruan dari '{}': {}",
+            download_url,
+            e
+        )
     })?;
 
     if !resp.status().is_success() {
@@ -273,14 +275,21 @@ pub async fn execute_self_update(
         );
     }
 
-    let bytes = resp.bytes().await.map_err(|e| {
-        anyhow::anyhow!("Gagal membaca bytes dari unduhan asset: {}", e)
-    })?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("Gagal membaca bytes dari unduhan asset: {}", e))?;
 
-    let binary_name = if cfg!(windows) { "gdrive.exe" } else { "gdrive" };
+    let binary_name = if cfg!(windows) {
+        "gdrive.exe"
+    } else {
+        "gdrive"
+    };
     let binary_bytes = extract_binary_from_tar_gz(std::io::Cursor::new(&bytes), binary_name)?;
 
-    let parent_dir = exe_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent_dir = exe_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     let tmp_path = parent_dir.join(format!(".gdrive.update.{}.tmp", std::process::id()));
 
     let write_res = (|| -> anyhow::Result<()> {
@@ -302,10 +311,17 @@ pub async fn execute_self_update(
             match output {
                 Ok(out) if !out.status.success() => {
                     let err = String::from_utf8_lossy(&out.stderr);
-                    tracing::warn!("codesign gagal dengan status {}: {}", out.status, err.trim());
+                    tracing::warn!(
+                        "codesign gagal dengan status {}: {}",
+                        out.status,
+                        err.trim()
+                    );
                 }
                 Err(e) => {
-                    tracing::warn!("Gagal menjalankan ad-hoc codesign pada file sementara: {}", e);
+                    tracing::warn!(
+                        "Gagal menjalankan ad-hoc codesign pada file sementara: {}",
+                        e
+                    );
                 }
                 _ => {}
             }
@@ -448,15 +464,24 @@ mod tests {
 
         let linux_arm = find_matching_asset(&assets, "linux", "aarch64");
         assert!(linux_arm.is_some());
-        assert_eq!(linux_arm.unwrap().name, "gdrive-aarch64-unknown-linux-gnu.tar.gz");
+        assert_eq!(
+            linux_arm.unwrap().name,
+            "gdrive-aarch64-unknown-linux-gnu.tar.gz"
+        );
 
         let macos_arm = find_matching_asset(&assets, "macos", "aarch64");
         assert!(macos_arm.is_some());
-        assert_eq!(macos_arm.unwrap().name, "gdrive-aarch64-apple-darwin.tar.gz");
+        assert_eq!(
+            macos_arm.unwrap().name,
+            "gdrive-aarch64-apple-darwin.tar.gz"
+        );
 
         let darwin_x64 = find_matching_asset(&assets, "darwin", "x86_64");
         assert!(darwin_x64.is_some());
-        assert_eq!(darwin_x64.unwrap().name, "gdrive-x86_64-apple-darwin.tar.gz");
+        assert_eq!(
+            darwin_x64.unwrap().name,
+            "gdrive-x86_64-apple-darwin.tar.gz"
+        );
 
         let windows_x64 = find_matching_asset(&assets, "windows", "x86_64");
         assert!(windows_x64.is_some());
@@ -471,7 +496,8 @@ mod tests {
     fn test_tar_gz_extraction() -> anyhow::Result<()> {
         let dummy_binary_content = b"#!/usr/bin/env bash\necho 'gdrive mock binary'\n";
 
-        let mut gz_encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut gz_encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         {
             let mut tar_builder = tar::Builder::new(&mut gz_encoder);
             let mut header = tar::Header::new_gnu();
@@ -486,7 +512,8 @@ mod tests {
         let extracted = extract_binary_from_tar_gz(std::io::Cursor::new(&archive_bytes), "gdrive")?;
         assert_eq!(extracted, dummy_binary_content);
 
-        let not_found = extract_binary_from_tar_gz(std::io::Cursor::new(&archive_bytes), "nonexistent");
+        let not_found =
+            extract_binary_from_tar_gz(std::io::Cursor::new(&archive_bytes), "nonexistent");
         assert!(not_found.is_err());
 
         Ok(())
