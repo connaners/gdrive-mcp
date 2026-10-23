@@ -154,11 +154,37 @@ impl AuthManager {
         }
     }
 
+    /// Menulis file secara atomic dengan temporary file dan set owner-only permissions di Unix
+    pub fn write_secure_file(path: &std::path::Path, content: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+
+        let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, content)
+            .with_context(|| format!("Gagal menulis temporary file ke {:?}", tmp_path))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+
+        std::fs::rename(&tmp_path, path)
+            .with_context(|| format!("Gagal merename temporary file ke {:?}", path))?;
+        Ok(())
+    }
+
     /// Menyimpan konfigurasi profil ke profiles.json
     pub fn save_profiles_config(cfg: &ProfilesConfig) -> Result<()> {
         let path = Self::profiles_config_path()?;
         let json = serde_json::to_string_pretty(cfg)?;
-        std::fs::write(&path, json)?;
+        Self::write_secure_file(&path, &json)?;
         Ok(())
     }
 
@@ -288,12 +314,9 @@ impl AuthManager {
     /// Menyimpan token untuk profile tertentu
     pub fn save_token_for_profile(profile: Option<&str>, token: &TokenData) -> Result<()> {
         let path = Self::token_path_for_profile(profile)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let token_to_save = token.clone().with_computed_expiry();
         let json = serde_json::to_string_pretty(&token_to_save)?;
-        std::fs::write(&path, json)?;
+        Self::write_secure_file(&path, &json)?;
         if let Some(p) = profile {
             let _ = Self::register_profile(p);
         }

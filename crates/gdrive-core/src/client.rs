@@ -56,12 +56,16 @@ impl GDriveClient {
 
     /// Membuat instance client dari profile tertentu (None = active profile)
     pub async fn from_profile(profile: Option<&str>) -> Result<Self> {
-        let token = AuthManager::get_valid_token_for_profile(profile).await?;
+        let concrete_profile = match profile {
+            Some(p) => AuthManager::validate_profile_name(p)?.to_string(),
+            None => AuthManager::get_active_profile(),
+        };
+        let token = AuthManager::get_valid_token_for_profile(Some(&concrete_profile)).await?;
         Ok(Self {
             http: reqwest::Client::new(),
             access_token: Arc::new(RwLock::new(token)),
             auto_refresh: true,
-            profile: profile.map(|s| s.to_string()),
+            profile: Some(concrete_profile),
         })
     }
 
@@ -343,6 +347,21 @@ impl GDriveClient {
             }
         }
         trimmed
+    }
+
+    /// Validasi ID Drive agar tidak mengandung path traversal atau karakter ilegal
+    pub fn validate_drive_id(raw_id: &str) -> Result<&str> {
+        let cleaned = Self::clean_file_id(raw_id);
+        if cleaned.is_empty() {
+            bail!("ID Drive tidak boleh kosong.");
+        }
+        if cleaned.contains('/') || cleaned.contains('\\') || cleaned.contains("..") {
+            bail!(
+                "ID Drive '{}' tidak valid: mengandung karakter traversal.",
+                raw_id
+            );
+        }
+        Ok(cleaned)
     }
 
     /// Membaca konten file dari Google Drive
@@ -1017,13 +1036,14 @@ impl GDriveClient {
 
     /// Menghapus permission dari suatu file atau folder di Google Drive
     pub async fn delete_permission(&self, raw_id: &str, permission_id: &str) -> Result<()> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
+        let perm_id = Self::validate_drive_id(permission_id)?;
         let url = format!(
             "{}/files/{}/permissions/{}",
-            DRIVE_API_BASE, file_id, permission_id
+            DRIVE_API_BASE, file_id, perm_id
         );
         let resp = self
-            .send_with_retry(|t| {
+            .send_mutation(|t| {
                 self.http
                     .delete(&url)
                     .bearer_auth(t)
@@ -1046,7 +1066,7 @@ impl GDriveClient {
         raw_id: &str,
         page_size: Option<u32>,
     ) -> Result<Vec<crate::models::DriveComment>> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
         let limit = page_size.unwrap_or(50).clamp(1, 100);
         let limit_str = limit.to_string();
         let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
@@ -1080,7 +1100,7 @@ impl GDriveClient {
         raw_id: &str,
         content: &str,
     ) -> Result<crate::models::DriveComment> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
         let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
 
         let body = serde_json::json!({
@@ -1119,15 +1139,15 @@ impl GDriveClient {
         raw_id: &str,
         comment_id: &str,
     ) -> Result<crate::models::DriveComment> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
+        let comm_id = Self::validate_drive_id(comment_id)?;
         let replies_url = format!(
             "{}/files/{}/comments/{}/replies",
-            DRIVE_API_BASE, file_id, comment_id
+            DRIVE_API_BASE, file_id, comm_id
         );
 
         let body = serde_json::json!({
-            "action": "resolve",
-            "content": "Resolved"
+            "action": "resolve"
         });
 
         let resp = self
@@ -1147,10 +1167,7 @@ impl GDriveClient {
         }
 
         // Ambil status comment terbaru setelah di-resolve
-        let comment_url = format!(
-            "{}/files/{}/comments/{}",
-            DRIVE_API_BASE, file_id, comment_id
-        );
+        let comment_url = format!("{}/files/{}/comments/{}", DRIVE_API_BASE, file_id, comm_id);
         let comment_resp = self
             .send_with_retry(|t| {
                 self.http.get(&comment_url).bearer_auth(t).query(&[
@@ -1189,9 +1206,9 @@ impl GDriveClient {
                 domain: None,
                 send_notification_email: false,
             };
-            if let Err(e) = self.create_permission(raw_id, opts).await {
-                tracing::warn!("Info pembuatan permission publik: {}", e);
-            }
+            self.create_permission(raw_id, opts)
+                .await
+                .context("Gagal membuat permission publik untuk file")?;
         }
 
         let meta = self.get_file_metadata(raw_id).await?;
@@ -1206,7 +1223,7 @@ impl GDriveClient {
 
     /// Mengambil daftar riwayat revisi (versi) dari file
     pub async fn list_revisions(&self, raw_id: &str) -> Result<Vec<crate::models::DriveRevision>> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
         let url = format!("{}/files/{}/revisions", DRIVE_API_BASE, file_id);
 
         let resp = self
@@ -1237,13 +1254,14 @@ impl GDriveClient {
         raw_id: &str,
         revision_id: &str,
     ) -> Result<(String, Vec<u8>)> {
-        let file_id = Self::clean_file_id(raw_id);
+        let file_id = Self::validate_drive_id(raw_id)?;
+        let rev_id = Self::validate_drive_id(revision_id)?;
         let meta = self.get_file_metadata(file_id).await?;
         let filename = meta.name;
 
         let url = format!(
             "{}/files/{}/revisions/{}?alt=media&supportsAllDrives=true",
-            DRIVE_API_BASE, file_id, revision_id
+            DRIVE_API_BASE, file_id, rev_id
         );
 
         let resp = self

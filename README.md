@@ -1,6 +1,6 @@
 # gdrive-mcp
 
-[![CI](https://github.com/connaners/gdrive-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/connaners/gdrive-mcp/actions/workflows/ci.yml)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/connaners/gdrive-mcp/tree/main.svg?style=shield)](https://circleci.com/gh/connaners/gdrive-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 High-performance, schema-safe **Google Drive CLI & Model Context Protocol (MCP) Server** written in Rust.

@@ -138,6 +138,8 @@ pub struct ShareFileArgs {
     pub email_address: Option<String>,
     /// Kirim notifikasi email ke pengguna target saat dibagikan. Default false.
     pub send_notification: Option<bool>,
+    /// Nama domain target jika permission_type adalah 'domain' (contoh: 'example.com').
+    pub domain: Option<String>,
 }
 
 /// Parameter untuk tool gdrive_delete_permission

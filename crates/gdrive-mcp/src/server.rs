@@ -587,12 +587,18 @@ impl GDriveMcpServer {
                 None,
             ));
         }
+        if permission_type == "domain" && args.domain.as_deref().unwrap_or("").trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "Parameter 'domain' wajib diisi jika permission_type adalah 'domain'.",
+                None,
+            ));
+        }
 
         let opts = CreatePermissionOptions {
             role: args.role,
             permission_type,
             email_address: args.email_address,
-            domain: None,
+            domain: args.domain,
             send_notification_email: args.send_notification.unwrap_or(false),
         };
 

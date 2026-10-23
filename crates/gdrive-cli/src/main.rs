@@ -186,6 +186,9 @@ enum Commands {
         /// Alamat email target (wajib jika target-type adalah 'user' atau 'group')
         #[arg(short, long)]
         email: Option<String>,
+        /// Nama domain (wajib jika target-type adalah 'domain', misal: company.com)
+        #[arg(long)]
+        domain: Option<String>,
         /// Kirim notifikasi email ke target saat dibagikan
         #[arg(long)]
         notification: bool,
@@ -499,9 +502,21 @@ async fn dispatch_collaboration_command(cmd: Commands) -> Result<()> {
             role,
             target_type,
             email,
+            domain,
             notification,
             json,
-        } => handle_share(file_id, role, target_type, email, notification, json).await,
+        } => {
+            handle_share(
+                file_id,
+                role,
+                target_type,
+                email,
+                domain,
+                notification,
+                json,
+            )
+            .await
+        }
         Commands::Permissions { action } => handle_permissions(action).await,
         Commands::Comments { action } => handle_comments(action).await,
         Commands::Revisions { action } => handle_revisions(action).await,
@@ -1213,6 +1228,7 @@ async fn handle_share(
     role: String,
     target_type: String,
     email: Option<String>,
+    domain: Option<String>,
     notification: bool,
     json: bool,
 ) -> Result<()> {
@@ -1235,13 +1251,16 @@ async fn handle_share(
             target_type
         );
     }
+    if target_type == "domain" && domain.as_deref().unwrap_or("").trim().is_empty() {
+        bail!("Argumen --domain wajib diisi jika --target-type adalah 'domain'.");
+    }
 
     let client = GDriveClient::from_saved_token().await?;
     let opts = CreatePermissionOptions {
         role: role.clone(),
         permission_type: target_type.clone(),
         email_address: email.clone(),
-        domain: None,
+        domain: domain.clone(),
         send_notification_email: notification,
     };
 
@@ -1363,24 +1382,28 @@ async fn handle_revisions(action: RevisionsCommands) -> Result<()> {
             let (filename, bytes) = client
                 .download_revision_bytes(&file_id, &revision_id)
                 .await?;
+            let sanitized = format::sanitize_download_filename(&filename);
+            let rev_filename = format!("rev_{}_{}", revision_id, sanitized);
             let target_path = match output {
                 Some(p) => {
                     if p.is_dir() {
-                        p.join(format::sanitize_download_filename(&filename))
+                        p.join(rev_filename)
                     } else {
                         p
                     }
                 }
-                None => {
-                    let sanitized = format::sanitize_download_filename(&filename);
-                    let rev_filename = format!("rev_{}_{}", revision_id, sanitized);
-                    PathBuf::from(rev_filename)
-                }
+                None => PathBuf::from(rev_filename),
             };
 
-            std::fs::write(&target_path, &bytes)
-                .with_context(|| format!("Gagal menyimpan revisi file ke {:?}", target_path))?;
+            if target_path.is_symlink() {
+                bail!("Destinasi output {:?} adalah symbolic link.", target_path);
+            }
 
+            let part_path = target_path.with_extension("part");
+            std::fs::write(&part_path, &bytes)
+                .with_context(|| format!("Gagal menulis temporary part file ke {:?}", part_path))?;
+            std::fs::rename(&part_path, &target_path)
+                .with_context(|| format!("Gagal menyimpan revisi file ke {:?}", target_path))?;
             eprintln!(
                 "✅ Revisi '{}' berhasil diunduh ke {:?}",
                 revision_id, target_path
@@ -1501,6 +1524,7 @@ mod tests {
                 role,
                 target_type,
                 email,
+                domain: _,
                 notification,
                 json,
             } => {
@@ -1524,6 +1548,7 @@ mod tests {
                 role,
                 target_type,
                 email,
+                domain,
                 notification,
                 json,
             } => {
@@ -1532,6 +1557,7 @@ mod tests {
                 assert_eq!(target_type, "anyone");
                 assert_eq!(email, None);
                 assert!(!notification);
+                assert_eq!(domain, None);
                 assert!(!json);
             }
             _ => panic!("Expected Share command"),
