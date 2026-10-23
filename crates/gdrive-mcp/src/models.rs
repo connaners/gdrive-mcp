@@ -99,3 +99,190 @@ pub struct DownloadFileArgs {
     /// Path folder atau file tujuan penyimpanan lokal (opsional, default: direktori kerja saat ini).
     pub destination_path: Option<String>,
 }
+
+/// Parameter untuk tool gdrive_copy_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CopyFileArgs {
+    /// ID unik file di Google Drive yang ingin disalin/diduplikasi.
+    pub file_id: String,
+    /// Nama baru untuk file hasil salinan (opsional, jika tidak diisi Drive akan memberi awalan 'Copy of').
+    pub new_name: Option<String>,
+    /// ID folder tujuan tempat file salinan disimpan (opsional, jika kosong disimpan di folder yang sama atau root).
+    pub parent_folder_id: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_get_file_info
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFileInfoArgs {
+    /// ID unik atau URL Google Drive dari file/folder yang ingin diperiksa metadatanya.
+    pub file_id: String,
+}
+
+/// Parameter untuk tool gdrive_list_permissions
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListPermissionsArgs {
+    /// ID unik atau URL Google Drive dari file atau folder yang ingin diperiksa daftar permission/hak aksesnya.
+    pub file_id: String,
+}
+
+/// Parameter untuk tool gdrive_share_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShareFileArgs {
+    /// ID unik atau URL Google Drive dari file atau folder yang akan dibagikan.
+    pub file_id: String,
+    /// Peran atau hak akses yang diberikan ('reader', 'commenter', 'writer', atau 'fileOrganizer').
+    pub role: String,
+    /// Tipe target pembagian ('anyone', 'user', 'group', atau 'domain').
+    pub permission_type: String,
+    /// Alamat email target (wajib jika permission_type adalah 'user' atau 'group').
+    pub email_address: Option<String>,
+    /// Kirim notifikasi email ke pengguna target saat dibagikan. Default false.
+    pub send_notification: Option<bool>,
+}
+
+/// Parameter untuk tool gdrive_delete_permission
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeletePermissionArgs {
+    /// ID unik atau URL Google Drive dari file atau folder.
+    pub file_id: String,
+    /// ID permission yang ingin dihapus (dapat diperoleh dari gdrive_list_permissions).
+    pub permission_id: String,
+}
+
+/// Parameter untuk tool gdrive_get_shareable_link
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetShareableLinkArgs {
+    /// ID unik atau URL Google Drive dari file atau folder yang ingin diambil link-nya.
+    pub file_id: String,
+    /// Jika true, otomatis membuat permission publik (anyone with link as reader) jika belum publik. Default false.
+    pub make_public: Option<bool>,
+}
+
+/// Parameter untuk tool gdrive_list_comments
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListCommentsArgs {
+    /// ID unik atau URL Google Drive dari file yang ingin dilihat komentarnya.
+    pub file_id: String,
+    /// Batas jumlah komentar yang diambil (default: 50, maksimal: 100).
+    pub page_size: Option<u32>,
+}
+
+/// Parameter untuk tool gdrive_add_comment
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddCommentArgs {
+    /// ID unik atau URL Google Drive dari file tempat komentar akan ditambahkan.
+    pub file_id: String,
+    /// Isi teks komentar atau feedback.
+    pub content: String,
+}
+
+/// Parameter untuk tool gdrive_resolve_comment
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveCommentArgs {
+    /// ID unik atau URL Google Drive dari file.
+    pub file_id: String,
+    /// ID komentar yang ingin ditandai terselesaikan (resolved).
+    pub comment_id: String,
+}
+
+/// Parameter untuk tool gdrive_list_trash
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTrashArgs {
+    /// Batas jumlah file di tempat sampah yang ingin ditampilkan (default: 50, maksimal: 100).
+    pub page_size: Option<u32>,
+    /// Token halaman untuk melanjutkan pagination jika hasil sebelumnya terpotong.
+    pub page_token: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_restore_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestoreFileArgs {
+    /// ID unik atau URL Google Drive dari file yang ingin dipulihkan dari tempat sampah.
+    pub file_id: String,
+}
+
+/// Parameter untuk tool gdrive_empty_trash
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EmptyTrashArgs {
+    /// Konfirmasi eksplisit untuk mengosongkan tempat sampah secara permanen (harus true).
+    pub confirm: bool,
+}
+
+/// Parameter untuk tool gdrive_list_revisions
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListRevisionsArgs {
+    /// ID unik atau URL Google Drive dari file yang ingin diperiksa riwayat versinya.
+    pub file_id: String,
+}
+
+/// Parameter untuk tool gdrive_get_revision
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetRevisionArgs {
+    /// ID unik atau URL Google Drive dari file.
+    pub file_id: String,
+    /// ID spesifik revisi/versi yang ingin diambil.
+    pub revision_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schemars::schema_for;
+
+    fn assert_no_raw_bool<T: JsonSchema>() {
+        let schema = schema_for!(T);
+        let val = serde_json::to_value(&schema).unwrap();
+        assert_val_no_raw_bool(&val);
+    }
+
+    fn assert_val_no_raw_bool(val: &serde_json::Value) {
+        if let serde_json::Value::Object(map) = val {
+            if let Some(props) = map.get("properties").and_then(|p| p.as_object()) {
+                for (prop_name, prop_val) in props {
+                    assert!(
+                        !prop_val.is_boolean(),
+                        "Property '{}' generated a bare boolean schema: {:?}",
+                        prop_name,
+                        prop_val
+                    );
+                }
+            }
+            for v in map.values() {
+                assert_val_no_raw_bool(v);
+            }
+        } else if let serde_json::Value::Array(arr) = val {
+            for v in arr {
+                assert_val_no_raw_bool(v);
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_mcp_schemas_are_safe() {
+        assert_no_raw_bool::<SearchFilesArgs>();
+        assert_no_raw_bool::<RenameFileArgs>();
+        assert_no_raw_bool::<MoveFileArgs>();
+        assert_no_raw_bool::<ReadFileArgs>();
+        assert_no_raw_bool::<ListFolderArgs>();
+        assert_no_raw_bool::<CreateFileArgs>();
+        assert_no_raw_bool::<UpdateFileArgs>();
+        assert_no_raw_bool::<CreateFolderArgs>();
+        assert_no_raw_bool::<TrashFileArgs>();
+        assert_no_raw_bool::<ListDrivesArgs>();
+        assert_no_raw_bool::<DownloadFileArgs>();
+        assert_no_raw_bool::<CopyFileArgs>();
+        assert_no_raw_bool::<GetFileInfoArgs>();
+        assert_no_raw_bool::<ListPermissionsArgs>();
+        assert_no_raw_bool::<ShareFileArgs>();
+        assert_no_raw_bool::<DeletePermissionArgs>();
+        assert_no_raw_bool::<GetShareableLinkArgs>();
+        assert_no_raw_bool::<ListCommentsArgs>();
+        assert_no_raw_bool::<AddCommentArgs>();
+        assert_no_raw_bool::<ResolveCommentArgs>();
+        assert_no_raw_bool::<ListTrashArgs>();
+        assert_no_raw_bool::<RestoreFileArgs>();
+        assert_no_raw_bool::<EmptyTrashArgs>();
+        assert_no_raw_bool::<ListRevisionsArgs>();
+        assert_no_raw_bool::<GetRevisionArgs>();
+    }
+}

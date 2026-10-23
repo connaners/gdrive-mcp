@@ -1,6 +1,7 @@
 use crate::auth::AuthManager;
 use crate::models::{
-    CreateFileOptions, DriveFile, DriveFileList, SearchFileOptions, UpdateFileOptions,
+    CreateFileOptions, CreatePermissionOptions, DriveFile, DriveFileList, DrivePermission,
+    DrivePermissionList, SearchFileOptions, UpdateFileOptions,
 };
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
@@ -26,6 +27,7 @@ pub struct GDriveClient {
     http: reqwest::Client,
     access_token: Arc<RwLock<String>>,
     auto_refresh: bool,
+    profile: Option<String>,
 }
 
 pub fn is_transient_status(status: reqwest::StatusCode) -> bool {
@@ -38,6 +40,7 @@ impl GDriveClient {
             http: reqwest::Client::new(),
             access_token: Arc::new(RwLock::new(access_token)),
             auto_refresh: false,
+            profile: None,
         }
     }
 
@@ -46,20 +49,33 @@ impl GDriveClient {
         self
     }
 
-    /// Membuat instance client dari token yang tersimpan di disk (dengan proactive refresh)
-    pub async fn from_saved_token() -> Result<Self> {
-        let token = AuthManager::get_valid_token().await?;
+    pub fn with_profile(mut self, profile: Option<String>) -> Self {
+        self.profile = profile;
+        self
+    }
+
+    /// Membuat instance client dari profile tertentu (None = active profile)
+    pub async fn from_profile(profile: Option<&str>) -> Result<Self> {
+        let token = AuthManager::get_valid_token_for_profile(profile).await?;
         Ok(Self {
             http: reqwest::Client::new(),
             access_token: Arc::new(RwLock::new(token)),
             auto_refresh: true,
+            profile: profile.map(|s| s.to_string()),
         })
+    }
+
+    /// Membuat instance client dari token yang tersimpan di disk (dengan proactive refresh)
+    pub async fn from_saved_token() -> Result<Self> {
+        Self::from_profile(None).await
     }
 
     /// Mengambil access token aktif saat ini (otomatis refresh proaktif jika sudah kedaluwarsa)
     pub async fn get_token(&self) -> String {
         if self.auto_refresh {
-            if let Ok(valid) = AuthManager::get_valid_token().await {
+            if let Ok(valid) =
+                AuthManager::get_valid_token_for_profile(self.profile.as_deref()).await
+            {
                 let mut lock = self.access_token.write().await;
                 *lock = valid.clone();
                 return valid;
@@ -72,7 +88,7 @@ impl GDriveClient {
     /// Refresh reaktif jika mendeteksi HTTP 401 Unauthorized
     pub async fn force_refresh(&self) -> Result<String> {
         if self.auto_refresh {
-            let refreshed = AuthManager::force_refresh().await?;
+            let refreshed = AuthManager::force_refresh_for_profile(self.profile.as_deref()).await?;
             let mut lock = self.access_token.write().await;
             *lock = refreshed.clone();
             Ok(refreshed)
@@ -632,6 +648,91 @@ impl GDriveClient {
         Ok(trashed)
     }
 
+    /// Memulihkan file dari tempat sampah (untrash)
+    pub async fn restore_trash_file(&self, raw_id: &str) -> Result<DriveFile> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!(
+            "{}/files/{}?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime",
+            DRIVE_API_BASE, file_id
+        );
+
+        let body = serde_json::json!({
+            "trashed": false
+        });
+
+        let resp = self
+            .send_mutation(|t| self.http.patch(&url).bearer_auth(t).json(&body))
+            .await
+            .context("Gagal memulihkan file dari tempat sampah di Google Drive")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!(
+                "Gagal memulihkan file dari tempat sampah di Google Drive: {}",
+                err
+            );
+        }
+
+        let restored: DriveFile = resp.json().await?;
+        Ok(restored)
+    }
+
+    /// Mengambil daftar file dan folder yang berada di tempat sampah
+    pub async fn list_trash(
+        &self,
+        page_size: Option<u32>,
+        page_token: Option<&str>,
+    ) -> Result<DriveFileList> {
+        let limit = page_size.unwrap_or(50).clamp(1, 100);
+        let limit_str = limit.to_string();
+        let url = format!("{}/files", DRIVE_API_BASE);
+
+        let resp = self
+            .send_with_retry(|t| {
+                let mut req = self.http.get(&url).bearer_auth(t).query(&[
+                    ("q", "trashed = true"),
+                    ("pageSize", limit_str.as_str()),
+                    (
+                        "fields",
+                        "nextPageToken, files(id, name, mimeType, webViewLink, parents, size, modifiedTime)",
+                    ),
+                    ("supportsAllDrives", "true"),
+                    ("includeItemsFromAllDrives", "true"),
+                    ("corpora", "allDrives"),
+                ]);
+                if let Some(token) = page_token {
+                    req = req.query(&[("pageToken", token)]);
+                }
+                req
+            })
+            .await
+            .context("Gagal mengambil daftar file di trash")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil daftar trash: {}", err);
+        }
+
+        let list: DriveFileList = resp.json().await?;
+        Ok(list)
+    }
+
+    /// Mengosongkan tempat sampah Google Drive (permanently purge trashed files)
+    pub async fn empty_trash(&self) -> Result<()> {
+        let url = format!("{}/files/trash?supportsAllDrives=true", DRIVE_API_BASE);
+        let resp = self
+            .send_mutation(|t| self.http.delete(&url).bearer_auth(t))
+            .await
+            .context("Gagal mengosongkan tempat sampah di Google Drive")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengosongkan tempat sampah di Google Drive: {}", err);
+        }
+
+        Ok(())
+    }
+
     /// Mengubah nama file atau folder di Google Drive
     pub async fn rename_file(&self, raw_id: &str, new_name: &str) -> Result<DriveFile> {
         let file_id = Self::clean_file_id(raw_id);
@@ -659,6 +760,57 @@ impl GDriveClient {
         if !resp.status().is_success() {
             let err = resp.text().await.unwrap_or_default();
             bail!("Gagal rename file di Google Drive: {}", err);
+        }
+
+        let file: DriveFile = resp.json().await?;
+        Ok(file)
+    }
+
+    /// Menyalin (copy/duplicate) file di Google Drive (opsional: nama baru dan folder tujuan baru)
+    pub async fn copy_file(
+        &self,
+        raw_id: &str,
+        new_name: Option<&str>,
+        parent_id: Option<&str>,
+    ) -> Result<DriveFile> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!(
+            "{}/files/{}/copy?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime",
+            DRIVE_API_BASE, file_id
+        );
+
+        let mut body = serde_json::Map::new();
+        if let Some(name) = new_name {
+            body.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+        }
+        if let Some(pid) = parent_id {
+            body.insert(
+                "parents".to_string(),
+                serde_json::Value::Array(vec![serde_json::Value::String(
+                    Self::clean_file_id(pid).to_string(),
+                )]),
+            );
+        }
+
+        let body_str = serde_json::Value::Object(body).to_string();
+
+        let resp = self
+            .send_with_retry(|t| {
+                self.http
+                    .post(&url)
+                    .bearer_auth(t)
+                    .header("Content-Type", "application/json; charset=UTF-8")
+                    .body(body_str.clone())
+            })
+            .await
+            .context("Gagal menyalin file di Google Drive")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal menyalin file di Google Drive: {}", err);
         }
 
         let file: DriveFile = resp.json().await?;
@@ -769,7 +921,10 @@ impl GDriveClient {
         let meta_resp = self
             .send_with_retry(|t| {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
-                    ("fields", "id, name, mimeType, size"),
+                    (
+                        "fields",
+                        "id, name, mimeType, size, webViewLink, parents, modifiedTime",
+                    ),
                     ("supportsAllDrives", "true"),
                 ])
             })
@@ -783,6 +938,326 @@ impl GDriveClient {
 
         let meta: DriveFile = meta_resp.json().await?;
         Ok(meta)
+    }
+
+    /// Mengambil daftar permission (hak akses) dari suatu file atau folder di Google Drive
+    pub async fn list_permissions(&self, raw_id: &str) -> Result<Vec<DrivePermission>> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!("{}/files/{}/permissions", DRIVE_API_BASE, file_id);
+        let resp = self
+            .send_with_retry(|t| {
+                self.http.get(&url).bearer_auth(t).query(&[
+                    ("supportsAllDrives", "true"),
+                    (
+                        "fields",
+                        "permissions(id,type,role,emailAddress,displayName,domain),nextPageToken",
+                    ),
+                ])
+            })
+            .await
+            .context("Gagal mengambil daftar permission file")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil daftar permission file: {}", err);
+        }
+
+        let list: DrivePermissionList = resp.json().await?;
+        Ok(list.permissions)
+    }
+
+    /// Membuat permission baru (membagikan file/folder ke pengguna, grup, domain, atau publik)
+    pub async fn create_permission(
+        &self,
+        raw_id: &str,
+        opts: CreatePermissionOptions,
+    ) -> Result<DrivePermission> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!("{}/files/{}/permissions", DRIVE_API_BASE, file_id);
+
+        let mut body = serde_json::json!({
+            "role": opts.role,
+            "type": opts.permission_type,
+        });
+        if let Some(email) = &opts.email_address {
+            body["emailAddress"] = serde_json::Value::String(email.clone());
+        }
+        if let Some(domain) = &opts.domain {
+            body["domain"] = serde_json::Value::String(domain.clone());
+        }
+
+        let send_notif = if opts.send_notification_email {
+            "true"
+        } else {
+            "false"
+        };
+        let resp = self
+            .send_mutation(|t| {
+                self.http
+                    .post(&url)
+                    .bearer_auth(t)
+                    .query(&[
+                        ("supportsAllDrives", "true"),
+                        ("sendNotificationEmail", send_notif),
+                        ("fields", "id,type,role,emailAddress,displayName,domain"),
+                    ])
+                    .json(&body)
+            })
+            .await
+            .context("Gagal mengirim request pembuatan permission")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal membuat permission file: {}", err);
+        }
+
+        let perm: DrivePermission = resp.json().await?;
+        Ok(perm)
+    }
+
+    /// Menghapus permission dari suatu file atau folder di Google Drive
+    pub async fn delete_permission(&self, raw_id: &str, permission_id: &str) -> Result<()> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!(
+            "{}/files/{}/permissions/{}",
+            DRIVE_API_BASE, file_id, permission_id
+        );
+        let resp = self
+            .send_with_retry(|t| {
+                self.http
+                    .delete(&url)
+                    .bearer_auth(t)
+                    .query(&[("supportsAllDrives", "true")])
+            })
+            .await
+            .context("Gagal mengirim request penghapusan permission")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal menghapus permission file: {}", err);
+        }
+
+        Ok(())
+    }
+
+    /// Mengambil daftar komentar pada file Google Drive
+    pub async fn list_comments(
+        &self,
+        raw_id: &str,
+        page_size: Option<u32>,
+    ) -> Result<Vec<crate::models::DriveComment>> {
+        let file_id = Self::clean_file_id(raw_id);
+        let limit = page_size.unwrap_or(50).clamp(1, 100);
+        let limit_str = limit.to_string();
+        let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
+
+        let resp = self
+            .send_with_retry(|t| {
+                self.http.get(&url).bearer_auth(t).query(&[
+                    ("supportsAllDrives", "true"),
+                    ("pageSize", limit_str.as_str()),
+                    (
+                        "fields",
+                        "comments(id,content,author,createdTime,modifiedTime,resolved),nextPageToken",
+                    ),
+                ])
+            })
+            .await
+            .context("Gagal mengambil daftar komentar file")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil daftar komentar file: {}", err);
+        }
+
+        let list: crate::models::DriveCommentList = resp.json().await?;
+        Ok(list.comments)
+    }
+
+    /// Menambahkan komentar baru ke file Google Drive
+    pub async fn create_comment(
+        &self,
+        raw_id: &str,
+        content: &str,
+    ) -> Result<crate::models::DriveComment> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!("{}/files/{}/comments", DRIVE_API_BASE, file_id);
+
+        let body = serde_json::json!({
+            "content": content
+        });
+
+        let resp = self
+            .send_mutation(|t| {
+                self.http
+                    .post(&url)
+                    .bearer_auth(t)
+                    .query(&[
+                        ("supportsAllDrives", "true"),
+                        (
+                            "fields",
+                            "id,content,author,createdTime,modifiedTime,resolved",
+                        ),
+                    ])
+                    .json(&body)
+            })
+            .await
+            .context("Gagal membuat komentar di file")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal membuat komentar file: {}", err);
+        }
+
+        let comment: crate::models::DriveComment = resp.json().await?;
+        Ok(comment)
+    }
+
+    /// Menandai komentar sebagai terselesaikan (resolved) via replies endpoint
+    pub async fn resolve_comment(
+        &self,
+        raw_id: &str,
+        comment_id: &str,
+    ) -> Result<crate::models::DriveComment> {
+        let file_id = Self::clean_file_id(raw_id);
+        let replies_url = format!(
+            "{}/files/{}/comments/{}/replies",
+            DRIVE_API_BASE, file_id, comment_id
+        );
+
+        let body = serde_json::json!({
+            "action": "resolve",
+            "content": "Resolved"
+        });
+
+        let resp = self
+            .send_mutation(|t| {
+                self.http
+                    .post(&replies_url)
+                    .bearer_auth(t)
+                    .query(&[("supportsAllDrives", "true")])
+                    .json(&body)
+            })
+            .await
+            .context("Gagal mengirim aksi resolve komentar")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal menyelesaikan komentar: {}", err);
+        }
+
+        // Ambil status comment terbaru setelah di-resolve
+        let comment_url = format!(
+            "{}/files/{}/comments/{}",
+            DRIVE_API_BASE, file_id, comment_id
+        );
+        let comment_resp = self
+            .send_with_retry(|t| {
+                self.http.get(&comment_url).bearer_auth(t).query(&[
+                    ("supportsAllDrives", "true"),
+                    (
+                        "fields",
+                        "id,content,author,createdTime,modifiedTime,resolved",
+                    ),
+                ])
+            })
+            .await
+            .context("Gagal mengambil status komentar setelah resolve")?;
+
+        if !comment_resp.status().is_success() {
+            return Ok(crate::models::DriveComment {
+                id: comment_id.to_string(),
+                content: String::new(),
+                author: None,
+                created_time: None,
+                modified_time: None,
+                resolved: Some(true),
+            });
+        }
+
+        let comment: crate::models::DriveComment = comment_resp.json().await?;
+        Ok(comment)
+    }
+
+    /// Mengambil tautan yang dapat dibagikan (shareable link / webViewLink)
+    pub async fn get_shareable_link(&self, raw_id: &str, make_public: bool) -> Result<String> {
+        if make_public {
+            let opts = CreatePermissionOptions {
+                role: "reader".to_string(),
+                permission_type: "anyone".to_string(),
+                email_address: None,
+                domain: None,
+                send_notification_email: false,
+            };
+            if let Err(e) = self.create_permission(raw_id, opts).await {
+                tracing::warn!("Info pembuatan permission publik: {}", e);
+            }
+        }
+
+        let meta = self.get_file_metadata(raw_id).await?;
+        let link = meta.web_view_link.unwrap_or_else(|| {
+            format!(
+                "https://drive.google.com/file/d/{}/view",
+                Self::clean_file_id(raw_id)
+            )
+        });
+        Ok(link)
+    }
+
+    /// Mengambil daftar riwayat revisi (versi) dari file
+    pub async fn list_revisions(&self, raw_id: &str) -> Result<Vec<crate::models::DriveRevision>> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!("{}/files/{}/revisions", DRIVE_API_BASE, file_id);
+
+        let resp = self
+            .send_with_retry(|t| {
+                self.http.get(&url).bearer_auth(t).query(&[
+                    ("supportsAllDrives", "true"),
+                    (
+                        "fields",
+                        "revisions(id,mimeType,modifiedTime,keepForever,size,lastModifyingUser),nextPageToken",
+                    ),
+                ])
+            })
+            .await
+            .context("Gagal mengambil daftar revisi file")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengambil daftar revisi file: {}", err);
+        }
+
+        let list: crate::models::DriveRevisionList = resp.json().await?;
+        Ok(list.revisions)
+    }
+
+    /// Mengunduh raw bytes dari revisi file tertentu
+    pub async fn download_revision_bytes(
+        &self,
+        raw_id: &str,
+        revision_id: &str,
+    ) -> Result<(String, Vec<u8>)> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta = self.get_file_metadata(file_id).await?;
+        let filename = meta.name;
+
+        let url = format!(
+            "{}/files/{}/revisions/{}?alt=media&supportsAllDrives=true",
+            DRIVE_API_BASE, file_id, revision_id
+        );
+
+        let resp = self
+            .send_with_retry(|t| self.http.get(&url).bearer_auth(t))
+            .await
+            .context("Gagal mengunduh konten revisi file")?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            bail!("Gagal mengunduh konten revisi: {}", err);
+        }
+
+        let bytes = resp.bytes().await?.to_vec();
+        Ok((filename, bytes))
     }
 
     /// Mengunduh raw bytes file dari Google Drive beserta metadata nama file aslinya

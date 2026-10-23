@@ -31,3 +31,7 @@ token.json
 .claude/
 .cursor/
 .agents/
+
+# Local planning & scratchpad
+.plans/
+
