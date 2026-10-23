@@ -3,7 +3,7 @@ version: 2.1
 executors:
   rust-env:
     docker:
-      - image: cimg/rust:latest
+      - image: cimg/rust:1.96.0
     resource_class: medium
     environment:
       CARGO_TERM_COLOR: always
