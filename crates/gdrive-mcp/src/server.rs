@@ -14,11 +14,12 @@ use serde_json::Value;
 use std::io::Write;
 
 use crate::models::{
-    AddCommentArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs, DeletePermissionArgs,
-    DownloadFileArgs, EmptyTrashArgs, GetFileInfoArgs, GetRevisionArgs, GetShareableLinkArgs,
-    ListCommentsArgs, ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListRevisionsArgs,
-    ListTrashArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs,
-    SearchFilesArgs, ShareFileArgs, TrashFileArgs, UpdateFileArgs,
+    AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
+    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetFileInfoArgs, GetRevisionArgs,
+    GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs, ListPermissionsArgs,
+    ListRevisionsArgs, ListTrashArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs,
+    ResolveCommentArgs, RestoreFileArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs,
+    TrashFileArgs, UpdateFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -148,7 +149,9 @@ impl ServerHandler for GDriveMcpServer {
             Use gdrive_restore_file to recover/untrash a file. \
             Use gdrive_empty_trash to permanently empty the trash bin. \
             Use gdrive_list_revisions to view previous versions of a file. \
-            Use gdrive_get_revision to inspect or retrieve content from a specific past revision.",
+            Use gdrive_get_revision to inspect or retrieve content from a specific past revision. \
+            Use gdrive_check_update to check for new releases and updates of gdrive-mcp from GitHub. \
+            Use gdrive_self_update to automatically update the gdrive binary to the latest release.",
         )
     }
 }
@@ -845,6 +848,60 @@ impl GDriveMcpServer {
                 "filename": filename,
                 "size_bytes": bytes.len(),
                 "content": content_or_info
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_check_update",
+        description = "Periksa ketersediaan versi terbaru gdrive-mcp dari GitHub Releases beserta informasi rilis dan link unduhan."
+    )]
+    pub async fn gdrive_check_update(
+        &self,
+        Parameters(args): Parameters<CheckUpdateArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let mut info = gdrive_core::check_for_update(None)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        if args.include_changelog != Some(true) {
+            info.release_notes = None;
+        }
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(info)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_self_update",
+        description = "Perbarui binary gdrive ke versi terbaru dari GitHub Releases secara otomatis."
+    )]
+    pub async fn gdrive_self_update(
+        &self,
+        Parameters(args): Parameters<SelfUpdateArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let success = gdrive_core::execute_self_update(None, None)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let restarting = args.restart == Some(true);
+        if restarting {
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(0);
+            });
+        }
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "status": "success",
+                "message": success.message,
+                "current_version": success.current_version,
+                "updated_to": success.updated_to,
+                "binary_path": success.binary_path,
+                "restarting": restarting
             }),
         }))
     }

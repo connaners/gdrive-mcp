@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use futures_util::StreamExt;
 use gdrive_core::{
     AuthManager, CreateFileOptions, CreatePermissionOptions, GDriveClient, UpdateFileOptions,
@@ -119,7 +120,7 @@ enum Commands {
         #[arg(long)]
         docs: bool,
     },
-    /// Perbarui isi file yang sudah ada di Google Drive
+    /// Perbarui isi file yang sudah ada di Google Drive (Catatan: Untuk memperbarui binary aplikasi gdrive, gunakan 'gdrive self-update' atau 'gdrive upgrade')
     Update {
         /// ID file yang ingin diperbarui
         file_id: String,
@@ -215,6 +216,19 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpCommands,
+    },
+    /// Periksa dan perbarui binary aplikasi gdrive ke versi terbaru dari GitHub Releases
+    #[command(name = "self-update", alias = "upgrade")]
+    SelfUpdate {
+        /// Hanya periksa ketersediaan versi terbaru tanpa melakukan pengunduhan
+        #[arg(short, long)]
+        check: bool,
+        /// Tampilkan catatan rilis (changelog) lengkap dari versi terbaru
+        #[arg(long)]
+        changelog: bool,
+        /// Tampilkan output dalam format JSON mentah
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -521,6 +535,11 @@ async fn dispatch_collaboration_command(cmd: Commands) -> Result<()> {
         Commands::Comments { action } => handle_comments(action).await,
         Commands::Revisions { action } => handle_revisions(action).await,
         Commands::Mcp { action } => handle_mcp(action).await,
+        Commands::SelfUpdate {
+            check,
+            changelog,
+            json,
+        } => handle_self_update(check, changelog, json).await,
         _ => unreachable!(),
     }
 }
@@ -1423,6 +1442,104 @@ async fn handle_mcp(action: McpCommands) -> Result<()> {
     Ok(())
 }
 
+async fn handle_self_update(check: bool, changelog: bool, json: bool) -> Result<()> {
+    if check {
+        let info = gdrive_core::check_for_update(None)
+            .await
+            .context("Gagal memeriksa pembaruan")?;
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&info)?);
+            return Ok(());
+        }
+
+        let mut table = Table::new();
+        table.load_preset(UTF8_FULL);
+        if table.width().unwrap_or(0) >= 60 {
+            table.set_content_arrangement(ContentArrangement::Dynamic);
+        }
+
+        let status_display = if info.update_available {
+            "Ya (Tersedia)"
+        } else {
+            "Tidak (Versi Terbaru)"
+        };
+
+        table.add_row(vec![
+            Cell::new("Versi Saat Ini")
+                .add_attribute(Attribute::Bold)
+                .fg(Color::Cyan),
+            Cell::new(format!("v{}", info.current_version)),
+        ]);
+        table.add_row(vec![
+            Cell::new("Versi Terbaru")
+                .add_attribute(Attribute::Bold)
+                .fg(if info.update_available {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                }),
+            Cell::new(format!("v{}", info.latest_version)),
+        ]);
+        table.add_row(vec![
+            Cell::new("Update Tersedia")
+                .add_attribute(Attribute::Bold),
+            Cell::new(status_display).fg(if info.update_available {
+                Color::Yellow
+            } else {
+                Color::Green
+            }),
+        ]);
+        table.add_row(vec![
+            Cell::new("URL Rilis")
+                .add_attribute(Attribute::Bold),
+            Cell::new(&info.release_url),
+        ]);
+        table.add_row(vec![
+            Cell::new("Tanggal Publikasi")
+                .add_attribute(Attribute::Bold),
+            Cell::new(info.published_at.as_deref().unwrap_or("-")),
+        ]);
+
+        println!("{table}");
+
+        if changelog {
+            match info.release_notes.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(notes) => println!("\nCatatan Rilis (v{}):\n{}", info.latest_version, notes),
+                None => println!("\nCatatan Rilis (v{}):\n(Tidak ada catatan rilis)", info.latest_version),
+            }
+        }
+
+        if info.update_available {
+            eprintln!("\n💡 Versi baru tersedia! Jalankan 'gdrive self-update' atau 'gdrive upgrade' untuk memperbarui.");
+        } else {
+            eprintln!("✅ Anda sudah menggunakan versi terbaru (v{}).", info.current_version);
+        }
+
+        Ok(())
+    } else {
+        if changelog {
+            if let Ok(info) = gdrive_core::check_for_update(None).await {
+                if let Some(notes) = &info.release_notes {
+                    println!("\nCatatan Rilis (v{}):\n{}", info.latest_version, notes);
+                }
+            }
+        }
+        eprintln!("Memeriksa dan memperbarui binary gdrive...");
+        let success = gdrive_core::execute_self_update(None, None).await?;
+
+        if json {
+            println!("{}", serde_json::to_string_pretty(&success)?);
+        } else {
+            eprintln!("✅ {}", success.message);
+            if success.current_version != success.updated_to {
+                println!("Updated to: v{}", success.updated_to);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1812,6 +1929,40 @@ mod tests {
                 _ => panic!("Expected Profile Remove subcommand"),
             },
             _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn test_self_update_check_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "self-update", "--check", "--json"]).unwrap();
+        match cli.command {
+            Commands::SelfUpdate {
+                check,
+                changelog,
+                json,
+            } => {
+                assert!(check);
+                assert!(!changelog);
+                assert!(json);
+            }
+            _ => panic!("Expected SelfUpdate command"),
+        }
+    }
+
+    #[test]
+    fn test_self_update_upgrade_alias_parsing() {
+        let cli = Cli::try_parse_from(["gdrive", "upgrade", "--changelog"]).unwrap();
+        match cli.command {
+            Commands::SelfUpdate {
+                check,
+                changelog,
+                json,
+            } => {
+                assert!(!check);
+                assert!(changelog);
+                assert!(!json);
+            }
+            _ => panic!("Expected SelfUpdate command via upgrade alias"),
         }
     }
 }
