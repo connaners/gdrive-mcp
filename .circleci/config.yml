@@ -1,0 +1,116 @@
+version: 2.1
+
+executors:
+  rust-env:
+    docker:
+      - image: cimg/rust:latest
+    resource_class: medium
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+
+jobs:
+  test-and-lint:
+    executor: rust-env
+    steps:
+      - checkout
+
+      - restore_cache:
+          name: Restore Cargo Cache
+          keys:
+            - cargo-cache-v1-{{ checksum "Cargo.lock" }}
+            - cargo-cache-v1-
+
+      - run:
+          name: Setup Toolchain Components
+          command: |
+            rustup component add clippy rustfmt
+
+      - run:
+          name: Check Formatting
+          command: cargo fmt --all -- --check
+
+      - run:
+          name: Check Workspace
+          command: cargo check --workspace --all-targets
+
+      - run:
+          name: Run Clippy
+          command: cargo clippy --workspace --all-targets -- -D warnings
+
+      - run:
+          name: Run Unit Tests
+          command: cargo test --workspace --verbose
+
+      - save_cache:
+          name: Save Cargo Cache
+          key: cargo-cache-v1-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+            - target
+
+  build-release:
+    executor: rust-env
+    steps:
+      - checkout
+
+      - restore_cache:
+          name: Restore Cargo Cache
+          keys:
+            - cargo-cache-v1-{{ checksum "Cargo.lock" }}
+            - cargo-cache-v1-
+
+      - run:
+          name: Build Release Binary
+          command: cargo build --release -p gdrive-cli
+
+      - run:
+          name: Package Artifacts
+          command: |
+            mkdir -p dist
+            cp target/release/gdrive dist/
+            tar -czvf dist/gdrive-linux-x86_64.tar.gz -C dist gdrive
+            cd dist && sha256sum gdrive-linux-x86_64.tar.gz > gdrive-linux-x86_64.tar.gz.sha256
+
+      - store_artifacts:
+          path: dist/gdrive-linux-x86_64.tar.gz
+          destination: gdrive-linux-x86_64.tar.gz
+
+      - store_artifacts:
+          path: dist/gdrive-linux-x86_64.tar.gz.sha256
+          destination: gdrive-linux-x86_64.tar.gz.sha256
+
+      - run:
+          name: Publish to GitHub Releases (if tag)
+          command: |
+            if [ -n "$CIRCLE_TAG" ] && [ -n "$GITHUB_TOKEN" ]; then
+              if ! command -v gh &> /dev/null; then
+                echo "Installing gh CLI..."
+                curl -sSL https://github.com/cli/cli/releases/download/v2.58.0/gh_2.58.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                sudo cp /tmp/gh_2.58.0_linux_amd64/bin/gh /usr/local/bin/
+              fi
+              echo "Publishing release $CIRCLE_TAG..."
+              gh release create "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 \
+                --title "$CIRCLE_TAG" \
+                --notes "Automated release build by CircleCI"
+            else
+              echo "Skipping GitHub release upload (not a tagged build or GITHUB_TOKEN unset)."
+            fi
+workflows:
+  version: 2
+  pipeline:
+    jobs:
+      - test-and-lint:
+          filters:
+            tags:
+              only: /.*/
+      - build-release:
+          requires:
+            - test-and-lint
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              only: main
