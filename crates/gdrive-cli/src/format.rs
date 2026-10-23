@@ -50,32 +50,37 @@ pub fn format_date(iso_date: Option<&str>) -> String {
     }
 }
 
+fn apply_table_arrangement(table: &mut Table) {
+    if table.width().unwrap_or(0) >= 60 {
+        table.set_content_arrangement(ContentArrangement::Dynamic);
+    }
+}
+
 pub fn render_files_table(files: &[DriveFile]) -> String {
     if files.is_empty() {
         return "Tidak ada file atau folder yang ditemukan.".to_string();
     }
 
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("ID")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Cyan),
-            Cell::new("Tipe")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Yellow),
-            Cell::new("Nama")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Green),
-            Cell::new("Ukuran")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Magenta),
-            Cell::new("Terakhir Diubah")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Blue),
-        ]);
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("ID")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Tipe")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+        Cell::new("Nama")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+        Cell::new("Ukuran")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Magenta),
+        Cell::new("Terakhir Diubah")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Blue),
+    ]);
 
     for f in files {
         let (icon, label) = format_mime(&f.mime_type);
@@ -110,9 +115,8 @@ pub fn sanitize_download_filename(raw_name: &str) -> String {
 
 pub fn render_file_info(f: &DriveFile) -> String {
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
 
     let (icon, label) = format_mime(&f.mime_type);
     let type_display = format!("{} {} ({})", icon, label, f.mime_type);
@@ -173,23 +177,22 @@ pub fn render_permissions_table(perms: &[DrivePermission]) -> String {
     }
 
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("ID")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Cyan),
-            Cell::new("Tipe")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Yellow),
-            Cell::new("Role")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Green),
-            Cell::new("Nama / Email / Domain")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Magenta),
-        ]);
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("ID")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Tipe")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+        Cell::new("Role")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+        Cell::new("Nama / Email / Domain")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Magenta),
+    ]);
 
     for p in perms {
         let target_display = if let Some(email) = &p.email_address {
@@ -225,26 +228,25 @@ pub fn render_comments_table(comments: &[DriveComment]) -> String {
     }
 
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("ID")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Cyan),
-            Cell::new("Author")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Magenta),
-            Cell::new("Status")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Yellow),
-            Cell::new("Created")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Blue),
-            Cell::new("Content")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Green),
-        ]);
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("ID")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("Author")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Magenta),
+        Cell::new("Status")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+        Cell::new("Created")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Blue),
+        Cell::new("Content")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+    ]);
 
     for c in comments {
         let author_str = if let Some(a) = &c.author {
@@ -282,26 +284,25 @@ pub fn render_revisions_table(revs: &[DriveRevision]) -> String {
     }
 
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new("Revision ID")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Cyan),
-            Cell::new("User")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Magenta),
-            Cell::new("Modified")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Blue),
-            Cell::new("Size")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Yellow),
-            Cell::new("KeepForever")
-                .add_attribute(Attribute::Bold)
-                .fg(Color::Green),
-        ]);
+    table.load_preset(UTF8_FULL);
+    apply_table_arrangement(&mut table);
+    table.set_header(vec![
+        Cell::new("Revision ID")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Cyan),
+        Cell::new("User")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Magenta),
+        Cell::new("Modified")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Blue),
+        Cell::new("Size")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Yellow),
+        Cell::new("KeepForever")
+            .add_attribute(Attribute::Bold)
+            .fg(Color::Green),
+    ]);
 
     for r in revs {
         let user_str = if let Some(u) = &r.last_modifying_user {
