@@ -149,6 +149,21 @@ pub struct DownloadFileArgs {
     pub file_id_or_name: String,
     /// Path folder atau file tujuan penyimpanan lokal (opsional, default: direktori kerja saat ini).
     pub destination_path: Option<String>,
+    /// Format ekspor jika file berupa Google Workspace docs (opsional: 'pdf', 'docx', 'xlsx', 'csv', 'txt', 'html').
+    pub export_format: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_export_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportFileArgs {
+    /// ID file atau tautan Google Docs, Sheets, atau Slides yang ingin diekspor.
+    pub file_id: String,
+    /// Format tujuan ekspor: 'pdf', 'docx', 'xlsx', 'csv', 'txt', atau 'html'.
+    pub format: String,
+    /// Path lokasi penyimpanan file lokal hasil ekspor (opsional, jika kosong disimpan di direktori saat ini).
+    pub destination_path: Option<String>,
     /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
     pub profile: Option<String>,
 }

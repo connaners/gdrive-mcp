@@ -15,10 +15,10 @@ use std::io::Write;
 
 use crate::models::{
     AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
-    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetAboutArgs, GetFileInfoArgs,
-    GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs,
-    ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs, MoveFileArgs,
-    ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
+    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, ExportFileArgs, GetAboutArgs,
+    GetFileInfoArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs,
+    ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs,
+    MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
     SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs,
     UpdateFileArgs, UploadFileArgs,
 };
@@ -108,6 +108,72 @@ async fn resolve_mcp_target(
     }
 
     Ok(files[0].id.clone())
+}
+
+fn map_export_format(
+    format_str: &str,
+    mime_type: &str,
+) -> Result<(&'static str, &'static str), ErrorData> {
+    let fmt = format_str.trim().to_lowercase();
+    match mime_type {
+        "application/vnd.google-apps.document" => match fmt.as_str() {
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "docx" => Ok((
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx",
+            )),
+            "txt" | "text" => Ok(("text/plain", "txt")),
+            "html" => Ok(("text/html", "html")),
+            "rtf" => Ok(("application/rtf", "rtf")),
+            "epub" => Ok(("application/epub+zip", "epub")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Docs. Format yang valid: pdf, docx, txt, html, rtf, epub.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        "application/vnd.google-apps.spreadsheet" => match fmt.as_str() {
+            "xlsx" => Ok((
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx",
+            )),
+            "csv" => Ok(("text/csv", "csv")),
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "tsv" => Ok(("text/tab-separated-values", "tsv")),
+            "html" => Ok(("application/zip", "zip")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Sheets. Format yang valid: xlsx, csv, pdf, tsv.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        "application/vnd.google-apps.presentation" => match fmt.as_str() {
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "pptx" => Ok((
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "pptx",
+            )),
+            "txt" | "text" => Ok(("text/plain", "txt")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Slides. Format yang valid: pdf, pptx, txt.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        _ => Err(ErrorData::invalid_params(
+            format!(
+                "File dengan mimeType '{}' bukan dokumen Google Workspace (Docs, Sheets, Slides) sehingga tidak dapat diekspor. Gunakan gdrive_download_file tanpa parameter export_format.",
+                mime_type
+            ),
+            None,
+        )),
+    }
 }
 
 #[derive(Clone)]
@@ -537,6 +603,66 @@ impl GDriveMcpServer {
         let orig_name = stream_data.name.clone();
         let mime_type = stream_data.mime_type.clone();
 
+        if let Some(export_fmt) = &args.export_format {
+            let (target_mime, ext) = map_export_format(export_fmt, &mime_type)?;
+            let (exported_name, bytes) = client
+                .export_file_bytes(&file_id, target_mime)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let stem = std::path::Path::new(&exported_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document");
+            let target_filename = format!("{}.{}", stem, ext);
+
+            let final_path = match args.destination_path {
+                Some(p) => {
+                    let pb = std::path::PathBuf::from(p);
+                    if pb.is_dir() {
+                        pb.join(&target_filename)
+                    } else {
+                        pb
+                    }
+                }
+                None => std::env::current_dir()
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .join(&target_filename),
+            };
+
+            if let Ok(meta) = std::fs::symlink_metadata(&final_path) {
+                if meta.file_type().is_symlink() {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "Tujuan download {:?} adalah symbolic link yang tidak diizinkan.",
+                            final_path
+                        ),
+                        None,
+                    ));
+                }
+            }
+
+            std::fs::write(&final_path, &bytes).map_err(|e| {
+                ErrorData::internal_error(
+                    format!("Gagal menulis file hasil download ekspor: {}", e),
+                    None,
+                )
+            })?;
+
+            let abs_path = std::fs::canonicalize(&final_path).unwrap_or(final_path);
+
+            return Ok(Json(ToolResponse {
+                result: serde_json::json!({
+                    "file_id": file_id,
+                    "file_name": exported_name,
+                    "local_path": abs_path.to_string_lossy().to_string(),
+                    "size_bytes": bytes.len(),
+                    "mime_type": target_mime,
+                    "exported_format": ext,
+                    "status": "success"
+                }),
+            }));
+        }
         let clean_name = orig_name.replace('\\', "/");
         let sanitized_name = std::path::Path::new(&clean_name)
             .file_name()
@@ -622,6 +748,78 @@ impl GDriveMcpServer {
                 "local_path": abs_path.to_string_lossy().to_string(),
                 "size_bytes": downloaded_bytes,
                 "mime_type": mime_type,
+                "status": "success"
+            }),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_export_file",
+        description = "Mengekspor dokumen Google Workspace (Docs, Sheets, Slides) ke format standar (PDF, DOCX, XLSX, CSV, TXT, HTML) dan menyimpannya ke disk lokal."
+    )]
+    pub async fn gdrive_export_file(
+        &self,
+        Parameters(args): Parameters<ExportFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let meta = client
+            .get_file_metadata(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let (target_mime, ext) = map_export_format(&args.format, &meta.mime_type)?;
+        let (orig_name, bytes) = client
+            .export_file_bytes(&file_id, target_mime)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let stem = std::path::Path::new(&orig_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document");
+        let target_filename = format!("{}.{}", stem, ext);
+
+        let out_path = match args.destination_path {
+            Some(p) => {
+                let pb = std::path::PathBuf::from(p);
+                if pb.is_dir() {
+                    pb.join(&target_filename)
+                } else {
+                    pb
+                }
+            }
+            None => std::env::current_dir()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                .join(&target_filename),
+        };
+
+        if let Ok(m) = std::fs::symlink_metadata(&out_path) {
+            if m.file_type().is_symlink() {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "Tujuan ekspor {:?} adalah symbolic link yang tidak diizinkan.",
+                        out_path
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        std::fs::write(&out_path, &bytes).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal menulis file ekspor: {}", e), None)
+        })?;
+
+        let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "document_name": orig_name,
+                "exported_format": ext,
+                "mime_type": target_mime,
+                "local_path": abs_path.to_string_lossy().to_string(),
+                "size_bytes": bytes.len(),
                 "status": "success"
             }),
         }))
