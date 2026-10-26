@@ -943,6 +943,7 @@ async fn handle_search(
             page_token,
             full_text,
             order_by,
+            ..Default::default()
         })
         .await?;
 

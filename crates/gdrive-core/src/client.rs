@@ -1,11 +1,13 @@
 use crate::auth::AuthManager;
 use crate::models::{
-    CreateFileOptions, CreatePermissionOptions, DriveAbout, DriveFile, DriveFileList,
-    DrivePermission, DrivePermissionList, SearchFileOptions, UpdateFileOptions,
+    CreateFileOptions, CreatePermissionOptions, DriveAbout, DriveBreadcrumb, DriveFile,
+    DriveFileList, DriveFilePathResult, DrivePermission, DrivePermissionList, DriveTreeNode,
+    SearchFileOptions, UpdateFileOptions,
 };
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use futures_util::Stream;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -250,6 +252,39 @@ impl GDriveClient {
             }
         }
 
+        if let Some(ft) = &opts.file_type {
+            let ft_lower = ft.trim().to_lowercase();
+            match ft_lower.as_str() {
+                "folder" => {
+                    q_parts.push("mimeType = 'application/vnd.google-apps.folder'".to_string())
+                }
+                "doc" => {
+                    q_parts.push("mimeType = 'application/vnd.google-apps.document'".to_string())
+                }
+                "sheet" => {
+                    q_parts.push("mimeType = 'application/vnd.google-apps.spreadsheet'".to_string())
+                }
+                "slide" => q_parts
+                    .push("mimeType = 'application/vnd.google-apps.presentation'".to_string()),
+                "pdf" => q_parts.push("mimeType = 'application/pdf'".to_string()),
+                "image" => q_parts.push("mimeType contains 'image/'".to_string()),
+                "video" => q_parts.push("mimeType contains 'video/'".to_string()),
+                "archive" => q_parts.push(
+                    "(mimeType contains 'zip' or mimeType contains 'tar' or mimeType contains 'rar' or mimeType contains 'compressed')".to_string(),
+                ),
+                other => {
+                    if other.contains('/') {
+                        let escaped_mime = other.replace('\\', "\\\\").replace('\'', "\\'");
+                        q_parts.push(format!("mimeType = '{escaped_mime}'"));
+                    }
+                }
+            }
+        }
+
+        if let Some(true) = opts.starred_only {
+            q_parts.push("starred = true".to_string());
+        }
+
         q_parts.join(" and ")
     }
 
@@ -272,7 +307,7 @@ impl GDriveClient {
                     ("pageSize", &limit.to_string()),
                     (
                         "fields",
-                        "nextPageToken, files(id, name, mimeType, webViewLink, parents, size, modifiedTime)",
+                        "nextPageToken, files(id, name, mimeType, webViewLink, parents, size, modifiedTime, starred)",
                     ),
                     ("supportsAllDrives", "true"),
                     ("includeItemsFromAllDrives", "true"),
@@ -326,6 +361,7 @@ impl GDriveClient {
                 page_token: None,
                 full_text: false,
                 order_by: None,
+                ..Default::default()
             })
             .await?;
         Ok(res.files)
@@ -962,7 +998,7 @@ impl GDriveClient {
                 self.http.get(&meta_url).bearer_auth(t).query(&[
                     (
                         "fields",
-                        "id, name, mimeType, size, webViewLink, parents, modifiedTime",
+                        "id, name, mimeType, size, webViewLink, parents, modifiedTime, starred",
                     ),
                     ("supportsAllDrives", "true"),
                 ])
@@ -977,6 +1013,238 @@ impl GDriveClient {
 
         let meta: DriveFile = meta_resp.json().await?;
         Ok(meta)
+    }
+
+    /// Mengunduh raw bytes dari ekspor Google Workspace doc ke MIME target tertentu (misal PDF, DOCX, XLSX, CSV, dsb)
+    pub async fn export_file_bytes(
+        &self,
+        raw_id: &str,
+        target_mime: &str,
+    ) -> Result<(String, Vec<u8>)> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta = self.get_file_metadata(file_id).await?;
+
+        // Verifikasi bahwa file adalah Google Workspace document
+        if !meta.mime_type.starts_with("application/vnd.google-apps.") {
+            bail!(
+                "File '{}' ({}) bukan dokumen Google Workspace sehingga tidak dapat diekspor. Gunakan download biasa.",
+                meta.name,
+                meta.mime_type
+            );
+        }
+
+        let export_url = format!("{}/files/{}/export", drive_api_base(), file_id);
+        let resp = self
+            .send_with_retry(|t| {
+                self.http
+                    .get(&export_url)
+                    .bearer_auth(t)
+                    .query(&[("mimeType", target_mime)])
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "Gagal mengekspor file {} ke format {}",
+                    file_id, target_mime
+                )
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_text = resp.text().await.unwrap_or_default();
+            bail!(
+                "Google Drive export error ({status}) untuk mimeType '{target_mime}': {err_text}"
+            );
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Gagal membaca byte stream hasil ekspor")?
+            .to_vec();
+        Ok((meta.name, bytes))
+    }
+
+    /// Menandai (star) atau mencabut tanda bintang (unstar) pada file/folder di Google Drive
+    pub async fn star_file(&self, raw_id: &str, starred: bool) -> Result<DriveFile> {
+        let file_id = Self::clean_file_id(raw_id);
+        let url = format!(
+            "{}/files/{}?supportsAllDrives=true&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime,starred",
+            drive_api_base(),
+            file_id
+        );
+
+        let body = serde_json::json!({
+            "starred": starred
+        });
+
+        let resp = self
+            .send_mutation(|t| {
+                self.http
+                    .patch(&url)
+                    .bearer_auth(t)
+                    .header("Content-Type", "application/json")
+                    .json(&body)
+            })
+            .await
+            .context("Gagal mengirim request update star ke Google Drive")?;
+
+        if !resp.status().is_success() {
+            let err_text = resp.text().await.unwrap_or_default();
+            bail!("Google Drive star_file error: {}", err_text);
+        }
+
+        let file: DriveFile = resp
+            .json()
+            .await
+            .context("Gagal mendecode response DriveFile setelah star update")?;
+        Ok(file)
+    }
+
+    /// Mengambil urutan breadcrumb folder dari root sampai file/folder tertentu (maksimal 10 hop untuk mencegah cyclic loops)
+    pub async fn get_file_breadcrumbs(&self, raw_id: &str) -> Result<DriveFilePathResult> {
+        let file_id = Self::clean_file_id(raw_id);
+        let meta = self.get_file_metadata(file_id).await?;
+        let orig_name = meta.name.clone();
+
+        let mut breadcrumbs = Vec::new();
+        breadcrumbs.push(DriveBreadcrumb {
+            id: meta.id.clone(),
+            name: meta.name.clone(),
+        });
+
+        let mut current_parents = meta.parents.clone().unwrap_or_default();
+        let mut hops = 0;
+
+        while let Some(parent_id) = current_parents.first() {
+            hops += 1;
+            if hops > 10 || parent_id == "root" {
+                if parent_id == "root" {
+                    breadcrumbs.push(DriveBreadcrumb {
+                        id: "root".to_string(),
+                        name: "My Drive".to_string(),
+                    });
+                }
+                break;
+            }
+
+            match self.get_file_metadata(parent_id).await {
+                Ok(parent_meta) => {
+                    let next_parents = parent_meta.parents.clone().unwrap_or_default();
+                    breadcrumbs.push(DriveBreadcrumb {
+                        id: parent_meta.id.clone(),
+                        name: parent_meta.name.clone(),
+                    });
+                    if next_parents.is_empty() {
+                        break;
+                    }
+                    current_parents = next_parents;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Reverse agar urutan dari Root -> ... -> File
+        breadcrumbs.reverse();
+
+        let full_path = breadcrumbs
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
+
+        Ok(DriveFilePathResult {
+            file_id: meta.id,
+            name: orig_name,
+            full_path: format!("/{}", full_path.trim_start_matches('/')),
+            breadcrumbs,
+        })
+    }
+
+    /// Menjelajah struktur pohon (folder tree) secara rekursif hingga max_depth (rentang 1..=4, default 2)
+    pub async fn get_folder_tree(&self, root_id: &str, max_depth: u32) -> Result<DriveTreeNode> {
+        let clean_id = Self::clean_file_id(root_id);
+        let clamped_depth = max_depth.clamp(1, 4);
+
+        let root_meta = if clean_id == "root" {
+            DriveFile {
+                id: "root".to_string(),
+                name: "My Drive".to_string(),
+                mime_type: "application/vnd.google-apps.folder".to_string(),
+                web_view_link: None,
+                parents: None,
+                size: None,
+                modified_time: None,
+                starred: None,
+            }
+        } else {
+            self.get_file_metadata(clean_id).await?
+        };
+
+        let mut root_node = DriveTreeNode {
+            id: root_meta.id.clone(),
+            name: root_meta.name.clone(),
+            mime_type: root_meta.mime_type.clone(),
+            is_folder: root_meta.mime_type == "application/vnd.google-apps.folder",
+            size: root_meta.size.clone(),
+            children: Vec::new(),
+        };
+
+        if root_node.is_folder {
+            self.populate_tree_children(&mut root_node, 1, clamped_depth)
+                .await?;
+        }
+
+        Ok(root_node)
+    }
+
+    fn populate_tree_children<'a>(
+        &'a self,
+        node: &'a mut DriveTreeNode,
+        current_depth: u32,
+        max_depth: u32,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            if current_depth > max_depth {
+                return Ok(());
+            }
+
+            // Ambil anak file & folder di dalam folder ini (dibatasi 50 items per folder untuk performa & context window)
+            let opts = SearchFileOptions {
+                query: None,
+                folder_id: Some(node.id.clone()),
+                page_size: Some(50),
+                page_token: None,
+                full_text: false,
+                order_by: Some("folder,name".to_string()),
+                file_type: None,
+                starred_only: None,
+            };
+
+            let file_list = self.search_files_with_options(opts).await?;
+            for file in file_list.files {
+                let is_folder = file.mime_type == "application/vnd.google-apps.folder";
+                let mut child_node = DriveTreeNode {
+                    id: file.id.clone(),
+                    name: file.name.clone(),
+                    mime_type: file.mime_type.clone(),
+                    is_folder,
+                    size: file.size.clone(),
+                    children: Vec::new(),
+                };
+
+                if is_folder && current_depth < max_depth {
+                    self.populate_tree_children(&mut child_node, current_depth + 1, max_depth)
+                        .await?;
+                }
+
+                node.children.push(child_node);
+            }
+
+            Ok(())
+        })
     }
 
     /// Mengambil daftar permission (hak akses) dari suatu file atau folder di Google Drive
@@ -1466,6 +1734,7 @@ impl GDriveClient {
                 page_token: None,
                 full_text: false,
                 order_by: Some("folder,name,modifiedTime desc".to_string()),
+                ..Default::default()
             })
             .await?;
         Ok(res.files)
@@ -1693,6 +1962,21 @@ mod tests {
             q,
             "trashed = false and name contains 'Romeo and Juliet\\'s notes.txt'"
         );
+    }
+
+    #[test]
+    fn test_build_search_query_with_file_type_and_starred() {
+        let opts = SearchFileOptions {
+            query: Some("laporan".to_string()),
+            file_type: Some("pdf".to_string()),
+            starred_only: Some(true),
+            ..Default::default()
+        };
+        let q = GDriveClient::build_search_query(&opts);
+        assert!(q.contains("trashed = false"));
+        assert!(q.contains("name contains 'laporan'"));
+        assert!(q.contains("mimeType = 'application/pdf'"));
+        assert!(q.contains("starred = true"));
     }
 
     #[test]

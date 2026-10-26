@@ -528,6 +528,7 @@ mod tests {
             parents: Some(vec!["parent_root".to_string()]),
             size: Some("1024".to_string()),
             modified_time: Some("2026-10-22T01:38:55.000Z".to_string()),
+            starred: None,
         };
         let rendered = render_file_info(&file);
         assert!(rendered.contains("test123"));

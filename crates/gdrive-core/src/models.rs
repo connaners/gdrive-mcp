@@ -14,6 +14,8 @@ pub struct DriveFile {
     pub size: Option<String>,
     #[serde(rename = "modifiedTime", default)]
     pub modified_time: Option<String>,
+    #[serde(default)]
+    pub starred: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,8 @@ pub struct SearchFileOptions {
     pub page_token: Option<String>,
     pub full_text: bool,
     pub order_by: Option<String>,
+    pub file_type: Option<String>,
+    pub starred_only: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +51,70 @@ pub struct UpdateFileOptions {
     pub file_id: String,
     pub content: String,
     pub append: bool,
+}
+
+/// Node representasi struktur pohon folder Google Drive
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveTreeNode {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub is_folder: bool,
+    #[serde(default)]
+    pub size: Option<String>,
+    #[serde(default)]
+    pub children: Vec<DriveTreeNode>,
+}
+
+/// Item breadcrumb untuk hierarki folder
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveBreadcrumb {
+    pub id: String,
+    pub name: String,
+}
+
+/// Hasil resolusi jalur lengkap file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveFilePathResult {
+    pub file_id: String,
+    pub name: String,
+    pub full_path: String,
+    pub breadcrumbs: Vec<DriveBreadcrumb>,
+}
+
+/// Satu aksi dalam batch operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveBatchAction {
+    pub action: String,
+    pub file_id: String,
+    #[serde(default)]
+    pub target_folder: Option<String>,
+    #[serde(default)]
+    pub new_name: Option<String>,
+    #[serde(default)]
+    pub starred: Option<bool>,
+}
+
+/// Hasil dari satu aksi batch
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveBatchItemResult {
+    pub file_id: String,
+    pub action: String,
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Laporan ringkasan batch operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveBatchReport {
+    pub total_operations: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub results: Vec<DriveBatchItemResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -267,6 +267,7 @@ impl GDriveMcpServer {
                 page_token: args.page_token,
                 full_text: args.full_text.unwrap_or(false),
                 order_by: args.order_by,
+                ..Default::default()
             })
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;

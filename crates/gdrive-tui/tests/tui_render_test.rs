@@ -35,6 +35,7 @@ fn sample_state() -> AppState {
             parents: Some(vec!["root".to_string()]),
             size: None,
             modified_time: Some("2026-10-24T10:00:00Z".to_string()),
+            starred: None,
         },
         DriveFile {
             id: "file_1".to_string(),
@@ -44,6 +45,7 @@ fn sample_state() -> AppState {
             parents: Some(vec!["root".to_string()]),
             size: Some("1048576".to_string()),
             modified_time: Some("2026-10-24T11:00:00Z".to_string()),
+            starred: None,
         },
     ];
     state.user_info = Some(DriveAboutUser {
@@ -199,6 +201,7 @@ fn test_render_all_modals() {
             parents: None,
             size: None,
             modified_time: None,
+            starred: None,
         }],
         search_query: InputBuffer::default(),
         search_results: None,
@@ -304,6 +307,7 @@ fn test_render_all_modals() {
             parents: None,
             size: Some("120".to_string()),
             modified_time: None,
+            starred: None,
         }],
         selected_index: 0,
         loading: false,
