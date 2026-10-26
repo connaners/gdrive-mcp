@@ -378,6 +378,30 @@ pub struct RunDoctorArgs {
     pub profile: Option<String>,
 }
 
+/// Satu item aksi dalam operasi batch file Google Drive
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BatchActionItem {
+    /// Tipe tindakan: 'move', 'trash', 'restore', 'copy', atau 'star'.
+    pub action: String,
+    /// ID file atau folder target.
+    pub file_id: String,
+    /// ID folder tujuan (wajib untuk aksi 'move', opsional untuk 'copy').
+    pub target_folder: Option<String>,
+    /// Nama baru file (opsional untuk aksi 'copy').
+    pub new_name: Option<String>,
+    /// Status bintang (wajib untuk aksi 'star': true untuk star, false untuk unstar).
+    pub starred: Option<bool>,
+}
+
+/// Parameter untuk tool gdrive_batch_ops
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BatchOpsArgs {
+    /// Daftar operasi yang ingin dijalankan secara massal (maksimal 25 item per pemanggilan).
+    pub operations: Vec<BatchActionItem>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +468,12 @@ mod tests {
         assert_no_raw_bool::<SwitchProfileArgs>();
         assert_no_raw_bool::<GetAboutArgs>();
         assert_no_raw_bool::<RunDoctorArgs>();
+        assert_no_raw_bool::<UploadFileArgs>();
+        assert_no_raw_bool::<ExportFileArgs>();
+        assert_no_raw_bool::<ListTreeArgs>();
+        assert_no_raw_bool::<GetFilePathArgs>();
+        assert_no_raw_bool::<StarFileArgs>();
+        assert_no_raw_bool::<BatchOpsArgs>();
+        assert_no_raw_bool::<BatchActionItem>();
     }
 }

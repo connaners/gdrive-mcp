@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::io::Write;
 
 use crate::models::{
-    AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
+    AddCommentArgs, BatchOpsArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
     DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, ExportFileArgs, GetAboutArgs,
     GetFileInfoArgs, GetFilePathArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs,
     ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs,
@@ -911,6 +911,225 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(updated).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_batch_ops",
+        description = "Mengeksekusi serangkaian operasi file (move, trash, restore, copy, star) secara massal dalam satu panggilan dengan isolasi error per-item (maksimal 25 item)."
+    )]
+    pub async fn gdrive_batch_ops(
+        &self,
+        Parameters(args): Parameters<BatchOpsArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        if args.operations.len() > 25 {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "Maksimal 25 operasi per panggilan gdrive_batch_ops (diberikan {} item).",
+                    args.operations.len()
+                ),
+                None,
+            ));
+        }
+
+        let mut results = Vec::new();
+        let mut succeeded = 0;
+        let mut failed = 0;
+
+        for op in args.operations {
+            let action_type = op.action.trim().to_lowercase();
+            let target_res = resolve_mcp_target(&client, &op.file_id).await;
+            let file_id = match target_res {
+                Ok(id) => id,
+                Err(e) => {
+                    failed += 1;
+                    results.push(serde_json::json!({
+                        "file_id": op.file_id,
+                        "action": action_type,
+                        "status": "error",
+                        "message": e.message
+                    }));
+                    continue;
+                }
+            };
+
+            match action_type.as_str() {
+                "move" => {
+                    let dest = match &op.target_folder {
+                        Some(d) if !d.trim().is_empty() => d.trim(),
+                        _ => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                 "action": "move",
+                                "status": "error",
+                                "message": "Parameter 'target_folder' wajib diisi untuk aksi 'move'."
+                            }));
+                            continue;
+                        }
+                    };
+                    let dest_id = match resolve_mcp_target(&client, dest).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "move",
+                                "status": "error",
+                                "message": format!("Folder tujuan '{}' tidak ditemukan: {}", dest, e.message)
+                            }));
+                            continue;
+                        }
+                    };
+                    match client.move_file(&file_id, &dest_id, None).await {
+                        Ok(moved) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "move",
+                                "status": "success",
+                                "data": moved
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "move",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                "trash" => match client.trash_file(&file_id).await {
+                    Ok(trashed) => {
+                        succeeded += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "trash",
+                            "status": "success",
+                            "data": trashed
+                        }));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "trash",
+                            "status": "error",
+                            "message": e.to_string()
+                        }));
+                    }
+                },
+                "restore" => match client.restore_trash_file(&file_id).await {
+                    Ok(restored) => {
+                        succeeded += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "restore",
+                            "status": "success",
+                            "data": restored
+                        }));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "restore",
+                            "status": "error",
+                            "message": e.to_string()
+                        }));
+                    }
+                },
+                "copy" => {
+                    let dest_id = if let Some(d) = &op.target_folder {
+                        match resolve_mcp_target(&client, d.trim()).await {
+                            Ok(id) => Some(id),
+                            Err(e) => {
+                                failed += 1;
+                                results.push(serde_json::json!({
+                                    "file_id": file_id,
+                                    "action": "copy",
+                                    "status": "error",
+                                    "message": format!("Folder tujuan copy '{}' tidak valid: {}", d, e.message)
+                                }));
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    match client
+                        .copy_file(&file_id, op.new_name.as_deref(), dest_id.as_deref())
+                        .await
+                    {
+                        Ok(copied) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "copy",
+                                "status": "success",
+                                "data": copied
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "copy",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                "star" => {
+                    let starred_val = op.starred.unwrap_or(true);
+                    match client.star_file(&file_id, starred_val).await {
+                        Ok(starred_file) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "star",
+                                "status": "success",
+                                "data": starred_file
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "star",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                other => {
+                    failed += 1;
+                    results.push(serde_json::json!({
+                        "file_id": file_id,
+                        "action": other,
+                        "status": "error",
+                        "message": format!(
+                            "Aksi '{}' tidak didukung. Aksi valid: move, trash, restore, copy, star.",
+                            other
+                        )
+                    }));
+                }
+            }
+        }
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "total_operations": results.len(),
+                "succeeded": succeeded,
+                "failed": failed,
+                "results": results
+            }),
         }))
     }
 
