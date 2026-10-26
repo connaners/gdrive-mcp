@@ -86,6 +86,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 parents: Some(vec!["root".to_string()]),
                 size: None,
                 modified_time: Some("2026-10-24T08:00:00Z".to_string()),
+                starred: None,
             },
             gdrive_core::DriveFile {
                 id: "demo_folder_2".to_string(),
@@ -95,6 +96,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 parents: Some(vec!["root".to_string()]),
                 size: None,
                 modified_time: Some("2026-10-23T14:30:00Z".to_string()),
+                starred: None,
             },
             gdrive_core::DriveFile {
                 id: "demo_file_1".to_string(),
@@ -104,6 +106,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 parents: Some(vec!["root".to_string()]),
                 size: Some("12450".to_string()),
                 modified_time: Some("2026-10-24T09:15:00Z".to_string()),
+                starred: None,
             },
             gdrive_core::DriveFile {
                 id: "demo_file_2".to_string(),
@@ -114,6 +117,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 parents: Some(vec!["root".to_string()]),
                 size: Some("542000".to_string()),
                 modified_time: Some("2026-10-22T16:45:00Z".to_string()),
+                starred: None,
             },
             gdrive_core::DriveFile {
                 id: "demo_file_3".to_string(),
@@ -123,6 +127,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 parents: Some(vec!["root".to_string()]),
                 size: Some("8500".to_string()),
                 modified_time: Some("2026-10-24T11:00:00Z".to_string()),
+                starred: None,
             },
         ];
         state.user_info = Some(gdrive_core::DriveAboutUser {
@@ -2702,6 +2707,7 @@ fn spawn_load_folder(client: GDriveClient, folder_id: String, tx: UnboundedSende
             page_token: None,
             full_text: false,
             order_by: Some("folder,name,modifiedTime desc".to_string()),
+            ..Default::default()
         };
         let res = client
             .search_files_with_options(opts)
@@ -2730,6 +2736,7 @@ fn spawn_load_category(
             page_token: None,
             full_text: false,
             order_by: Some("folder,name,modifiedTime desc".to_string()),
+            ..Default::default()
         };
         let res = client
             .search_files_with_options(opts)
@@ -2753,6 +2760,7 @@ fn spawn_load_folder_peek(client: GDriveClient, folder_id: String, tx: Unbounded
             page_token: None,
             full_text: false,
             order_by: Some("folder,name,modifiedTime desc".to_string()),
+            ..Default::default()
         };
         if let Ok(res) = client.search_files_with_options(opts).await {
             let _ = tx.send(AppEvent::FolderPeekLoaded {
@@ -2850,6 +2858,7 @@ fn spawn_search(
             page_token: None,
             full_text,
             order_by,
+            ..Default::default()
         };
         let res = client.search_files_with_options(opts).await;
         match res {
@@ -2890,6 +2899,7 @@ fn spawn_load_move_folders(client: GDriveClient, folder_id: String, tx: Unbounde
             page_token: None,
             full_text: false,
             order_by: Some("name asc".to_string()),
+            ..Default::default()
         };
         match client.search_files_with_options(opts).await {
             Ok(res) => {
@@ -2918,6 +2928,7 @@ fn spawn_search_folders(client: GDriveClient, query_name: String, tx: UnboundedS
             page_token: None,
             full_text: false,
             order_by: Some("name asc".to_string()),
+            ..Default::default()
         };
         let folders = client
             .search_files_with_options(opts)

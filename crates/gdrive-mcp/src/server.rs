@@ -14,13 +14,13 @@ use serde_json::Value;
 use std::io::Write;
 
 use crate::models::{
-    AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
-    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, GetAboutArgs, GetFileInfoArgs,
-    GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs, ListFolderArgs,
-    ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs, MoveFileArgs,
-    ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
-    SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs,
-    UpdateFileArgs,
+    AddCommentArgs, BatchOpsArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
+    DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, ExportFileArgs, GetAboutArgs,
+    GetFileInfoArgs, GetFilePathArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs,
+    ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs,
+    ListTrashArgs, ListTreeArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs,
+    RestoreFileArgs, RunDoctorArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, StarFileArgs,
+    SwitchProfileArgs, TrashFileArgs, UpdateFileArgs, UploadFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -62,7 +62,16 @@ async fn resolve_mcp_target(
     client: &GDriveClient,
     raw_target: &str,
 ) -> std::result::Result<String, ErrorData> {
-    let target = GDriveClient::clean_file_id(raw_target);
+    let target = GDriveClient::clean_file_id(raw_target).trim();
+    if target.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "ID atau nama target tidak boleh kosong.",
+            None,
+        ));
+    }
+    if target.eq_ignore_ascii_case("root") || target.eq_ignore_ascii_case("my drive") {
+        return Ok("root".to_string());
+    }
     if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
         if let Ok(meta) = client.get_file_metadata(target).await {
             return Ok(meta.id);
@@ -110,6 +119,98 @@ async fn resolve_mcp_target(
     Ok(files[0].id.clone())
 }
 
+fn map_export_format(
+    format_str: &str,
+    mime_type: &str,
+) -> Result<(&'static str, &'static str), ErrorData> {
+    let fmt = format_str.trim().trim_start_matches('.').to_lowercase();
+    match mime_type {
+        "application/vnd.google-apps.document" => match fmt.as_str() {
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "docx" => Ok((
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx",
+            )),
+            "txt" | "text" => Ok(("text/plain", "txt")),
+            "html" => Ok(("text/html", "html")),
+            "rtf" => Ok(("application/rtf", "rtf")),
+            "epub" => Ok(("application/epub+zip", "epub")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Docs. Format yang valid: pdf, docx, txt, html, rtf, epub.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        "application/vnd.google-apps.spreadsheet" => match fmt.as_str() {
+            "xlsx" => Ok((
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx",
+            )),
+            "csv" => Ok(("text/csv", "csv")),
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "tsv" => Ok(("text/tab-separated-values", "tsv")),
+            "html" => Ok(("application/zip", "zip")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Sheets. Format yang valid: xlsx, csv, pdf, tsv.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        "application/vnd.google-apps.presentation" => match fmt.as_str() {
+            "pdf" => Ok(("application/pdf", "pdf")),
+            "pptx" => Ok((
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "pptx",
+            )),
+            "txt" | "text" => Ok(("text/plain", "txt")),
+            _ => Err(ErrorData::invalid_params(
+                format!(
+                    "Format '{}' tidak didukung untuk Google Slides. Format yang valid: pdf, pptx, txt.",
+                    format_str
+                ),
+                None,
+            )),
+        },
+        _ => Err(ErrorData::invalid_params(
+            format!(
+                "File dengan mimeType '{}' bukan dokumen Google Workspace (Docs, Sheets, Slides) sehingga tidak dapat diekspor. Gunakan gdrive_download_file tanpa parameter export_format.",
+                mime_type
+            ),
+            None,
+        )),
+    }
+}
+
+fn expand_local_path(raw: &str) -> std::path::PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("~/") || trimmed == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(trimmed.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+    let pb = std::path::PathBuf::from(trimmed);
+    if pb.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&pb))
+            .unwrap_or(pb)
+    } else {
+        pb
+    }
+}
+
+fn ensure_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct GDriveMcpServer {
     tool_router: ToolRouter<Self>,
@@ -153,18 +254,24 @@ impl ServerHandler for GDriveMcpServer {
             "Use gdrive_list_profiles to see configured Google Drive accounts/profiles and which one is active. \
             Use gdrive_switch_profile to switch the active profile. \
             Use gdrive_get_about to check storage quota (usage and limits) and current user identity. \
-            Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, and pagination. \
+            Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, pagination, file_type filter, and starred_only filter. \
             Use gdrive_read_file to read document contents (auto-converts Google Docs to markdown, Sheets to CSV, Slides to text). \
-            Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date) without reading full contents. \
+            Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date, starred) without reading full contents. \
+            Use gdrive_get_file_path to get the complete human-readable folder breadcrumbs path from root to the file. \
+            Use gdrive_list_tree to explore recursive folder hierarchy trees up to max_depth in a single token-efficient call. \
             Use gdrive_create_file to write or upload documents, with optional conversion to native Google Docs. \
+            Use gdrive_upload_file to upload any local file from disk (PDF, script, image, zip, doc) to Google Drive. \
+            Use gdrive_export_file to export Google Docs, Sheets, or Slides to standard formats (PDF, DOCX, XLSX, CSV, TXT, HTML). \
             Use gdrive_update_file to modify or append content to existing files. \
             Use gdrive_copy_file to duplicate files with optional new name or destination folder. \
+            Use gdrive_star_file to star (favorite) or unstar a file or folder. \
+            Use gdrive_batch_ops to execute multiple file operations (move, trash, restore, copy, star) in one batch call. \
             Use gdrive_create_folder to create directories. \
             Use gdrive_rename_file to rename a file or folder. \
             Use gdrive_move_file to move a file or folder to a target folder. \
             Use gdrive_trash_file to safely move files or folders to trash. \
             Use gdrive_list_drives to list accessible Shared Drives. \
-            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name. \
+            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name, with optional export_format for Workspace docs. \
             Use gdrive_list_permissions to view who has access to a file or folder. \
             Use gdrive_share_file to share a file or folder with users, groups, domains, or anyone with link. \
             Use gdrive_delete_permission to revoke access for a specific permission ID. \
@@ -267,6 +374,8 @@ impl GDriveMcpServer {
                 page_token: args.page_token,
                 full_text: args.full_text.unwrap_or(false),
                 order_by: args.order_by,
+                file_type: args.file_type,
+                starred_only: args.starred_only,
             })
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -310,13 +419,64 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<ListFolderArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let target_folder = match args.folder_id.as_deref() {
+            Some(f) if !f.trim().is_empty() => Some(resolve_mcp_target(&client, f.trim()).await?),
+            _ => None,
+        };
         let files = client
-            .search_files(None, args.folder_id.as_deref(), args.page_size)
+            .search_files(None, target_folder.as_deref(), args.page_size)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(files).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_tree",
+        description = "Melihat struktur pohon folder (folder tree) secara rekursif hingga kedalaman max_depth (1-4, default 2) dalam satu pemanggilan hemat token."
+    )]
+    pub async fn gdrive_list_tree(
+        &self,
+        Parameters(args): Parameters<ListTreeArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let root_id = match args.folder_id.as_deref() {
+            Some(f) if !f.trim().is_empty() && !f.trim().eq_ignore_ascii_case("root") => {
+                resolve_mcp_target(&client, f.trim()).await?
+            }
+            _ => "root".to_string(),
+        };
+        let max_depth = args.max_depth.unwrap_or(2);
+
+        let tree = client
+            .get_folder_tree(&root_id, max_depth)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
         Ok(Json(ToolResponse {
-            result: serde_json::to_value(files).unwrap_or(Value::Null),
+            result: serde_json::to_value(tree).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_file_path",
+        description = "Mendapatkan jalur hierarki folder lengkap (human-readable breadcrumbs path) dari root Drive sampai ke file atau folder tujuan."
+    )]
+    pub async fn gdrive_get_file_path(
+        &self,
+        Parameters(args): Parameters<GetFilePathArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+
+        let path_info = client
+            .get_file_breadcrumbs(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(path_info).unwrap_or(Value::Null),
         }))
     }
 
@@ -341,6 +501,51 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(created).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_upload_file",
+        description = "Mengunggah file dari disk lokal ke Google Drive dengan deteksi MIME otomatis dan opsi konversi ke native Google Docs."
+    )]
+    pub async fn gdrive_upload_file(
+        &self,
+        Parameters(args): Parameters<UploadFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let local_path = expand_local_path(&args.local_path);
+
+        if !local_path.exists() {
+            return Err(ErrorData::invalid_params(
+                format!("File lokal '{:?}' tidak ditemukan di disk.", local_path),
+                None,
+            ));
+        }
+
+        if !local_path.is_file() {
+            return Err(ErrorData::invalid_params(
+                format!("Path '{:?}' adalah direktori, bukan file.", local_path),
+                None,
+            ));
+        }
+
+        let resolved_parent = match args.parent_folder_id.as_deref() {
+            Some(p) if !p.trim().is_empty() => Some(resolve_mcp_target(&client, p.trim()).await?),
+            _ => None,
+        };
+
+        let uploaded = client
+            .upload_file_path(
+                &local_path,
+                args.name.as_deref(),
+                resolved_parent.as_deref(),
+                args.as_google_doc.unwrap_or(false),
+            )
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(uploaded).unwrap_or(Value::Null),
         }))
     }
 
@@ -395,11 +600,11 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<TrashFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let trashed = client
-            .trash_file(&args.file_id)
+            .trash_file(&file_id)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(trashed).unwrap_or(Value::Null),
         }))
@@ -414,11 +619,11 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<RenameFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let renamed = client
-            .rename_file(&args.file_id, &args.new_name)
+            .rename_file(&file_id, &args.new_name)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(renamed).unwrap_or(Value::Null),
         }))
@@ -433,15 +638,16 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<MoveFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let new_parent_id = if args.new_parent_id.trim().eq_ignore_ascii_case("root") {
+            "root".to_string()
+        } else {
+            resolve_mcp_target(&client, &args.new_parent_id).await?
+        };
         let moved = client
-            .move_file(
-                &args.file_id,
-                &args.new_parent_id,
-                args.old_parent_id.as_deref(),
-            )
+            .move_file(&file_id, &new_parent_id, args.old_parent_id.as_deref())
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(moved).unwrap_or(Value::Null),
         }))
@@ -480,6 +686,76 @@ impl GDriveMcpServer {
         // Resolusi target ke File ID
         let file_id = resolve_mcp_target(&client, target).await?;
 
+        if let Some(export_fmt) = &args.export_format {
+            let meta = client
+                .get_file_metadata(&file_id)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let (target_mime, ext) = map_export_format(export_fmt, &meta.mime_type)?;
+            let (exported_name, bytes) = client
+                .export_file_bytes(&file_id, target_mime)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let stem = std::path::Path::new(&exported_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document");
+            let target_filename = format!("{}.{}", stem, ext);
+
+            let final_path = match args.destination_path {
+                Some(ref p) => {
+                    let pb = expand_local_path(p);
+                    if pb.is_dir() {
+                        pb.join(&target_filename)
+                    } else {
+                        pb
+                    }
+                }
+                None => std::env::current_dir()
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                    .join(&target_filename),
+            };
+
+            ensure_parent_dir(&final_path).map_err(|e| {
+                ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+            })?;
+
+            if let Ok(meta) = std::fs::symlink_metadata(&final_path) {
+                if meta.file_type().is_symlink() {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "Tujuan download {:?} adalah symbolic link yang tidak diizinkan.",
+                            final_path
+                        ),
+                        None,
+                    ));
+                }
+            }
+
+            std::fs::write(&final_path, &bytes).map_err(|e| {
+                ErrorData::internal_error(
+                    format!("Gagal menulis file hasil download ekspor: {}", e),
+                    None,
+                )
+            })?;
+
+            let abs_path = std::fs::canonicalize(&final_path).unwrap_or(final_path);
+
+            return Ok(Json(ToolResponse {
+                result: serde_json::json!({
+                    "file_id": file_id,
+                    "file_name": exported_name,
+                    "local_path": abs_path.to_string_lossy().to_string(),
+                    "size_bytes": bytes.len(),
+                    "mime_type": target_mime,
+                    "exported_format": ext,
+                    "status": "success"
+                }),
+            }));
+        }
+
         let stream_data = client
             .download_file_stream(&file_id)
             .await
@@ -487,7 +763,6 @@ impl GDriveMcpServer {
 
         let orig_name = stream_data.name.clone();
         let mime_type = stream_data.mime_type.clone();
-
         let clean_name = orig_name.replace('\\', "/");
         let sanitized_name = std::path::Path::new(&clean_name)
             .file_name()
@@ -497,8 +772,8 @@ impl GDriveMcpServer {
             .unwrap_or("downloaded_file");
 
         let out_path = match args.destination_path {
-            Some(p) => {
-                let pb = std::path::PathBuf::from(p);
+            Some(ref p) => {
+                let pb = expand_local_path(p);
                 if pb.is_dir() {
                     pb.join(sanitized_name)
                 } else {
@@ -509,6 +784,10 @@ impl GDriveMcpServer {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
                 .join(sanitized_name),
         };
+
+        ensure_parent_dir(&out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+        })?;
 
         if let Ok(meta) = std::fs::symlink_metadata(&out_path) {
             if meta.file_type().is_symlink() {
@@ -579,6 +858,82 @@ impl GDriveMcpServer {
     }
 
     #[tool(
+        name = "gdrive_export_file",
+        description = "Mengekspor dokumen Google Workspace (Docs, Sheets, Slides) ke format standar (PDF, DOCX, XLSX, CSV, TXT, HTML) dan menyimpannya ke disk lokal."
+    )]
+    pub async fn gdrive_export_file(
+        &self,
+        Parameters(args): Parameters<ExportFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let meta = client
+            .get_file_metadata(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let (target_mime, ext) = map_export_format(&args.format, &meta.mime_type)?;
+        let (orig_name, bytes) = client
+            .export_file_bytes(&file_id, target_mime)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let stem = std::path::Path::new(&orig_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document");
+        let target_filename = format!("{}.{}", stem, ext);
+
+        let out_path = match args.destination_path {
+            Some(ref p) => {
+                let pb = expand_local_path(p);
+                if pb.is_dir() {
+                    pb.join(&target_filename)
+                } else {
+                    pb
+                }
+            }
+            None => std::env::current_dir()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+                .join(&target_filename),
+        };
+
+        ensure_parent_dir(&out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+        })?;
+
+        if let Ok(m) = std::fs::symlink_metadata(&out_path) {
+            if m.file_type().is_symlink() {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "Tujuan ekspor {:?} adalah symbolic link yang tidak diizinkan.",
+                        out_path
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        std::fs::write(&out_path, &bytes).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal menulis file ekspor: {}", e), None)
+        })?;
+
+        let abs_path = std::fs::canonicalize(&out_path).unwrap_or(out_path);
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "file_id": file_id,
+                "document_name": orig_name,
+                "exported_format": ext,
+                "mime_type": target_mime,
+                "local_path": abs_path.to_string_lossy().to_string(),
+                "size_bytes": bytes.len(),
+                "status": "success"
+            }),
+        }))
+    }
+
+    #[tool(
         name = "gdrive_copy_file",
         description = "Menyalin (duplicate) file di Google Drive dengan opsi nama baru dan folder tujuan baru."
     )]
@@ -599,6 +954,257 @@ impl GDriveMcpServer {
         Ok(Json(ToolResponse {
             result: serde_json::to_value(copied)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_star_file",
+        description = "Menandai (star/favorite) atau mencabut bintang pada file atau folder di Google Drive."
+    )]
+    pub async fn gdrive_star_file(
+        &self,
+        Parameters(args): Parameters<StarFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+
+        let updated = client
+            .star_file(&file_id, args.starred)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(updated).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_batch_ops",
+        description = "Mengeksekusi serangkaian operasi file (move, trash, restore, copy, star) secara massal dalam satu panggilan dengan isolasi error per-item (maksimal 25 item)."
+    )]
+    pub async fn gdrive_batch_ops(
+        &self,
+        Parameters(args): Parameters<BatchOpsArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        if args.operations.len() > 25 {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "Maksimal 25 operasi per panggilan gdrive_batch_ops (diberikan {} item).",
+                    args.operations.len()
+                ),
+                None,
+            ));
+        }
+
+        let mut results = Vec::new();
+        let mut succeeded = 0;
+        let mut failed = 0;
+
+        for op in args.operations {
+            let action_type = op.action.trim().to_lowercase();
+            let target_res = resolve_mcp_target(&client, &op.file_id).await;
+            let file_id = match target_res {
+                Ok(id) => id,
+                Err(e) => {
+                    failed += 1;
+                    results.push(serde_json::json!({
+                        "file_id": op.file_id,
+                        "action": action_type,
+                        "status": "error",
+                        "message": e.message
+                    }));
+                    continue;
+                }
+            };
+
+            match action_type.as_str() {
+                "move" => {
+                    let dest = match &op.target_folder {
+                        Some(d) if !d.trim().is_empty() => d.trim(),
+                        _ => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                 "action": "move",
+                                "status": "error",
+                                "message": "Parameter 'target_folder' wajib diisi untuk aksi 'move'."
+                            }));
+                            continue;
+                        }
+                    };
+                    let dest_id = if dest.eq_ignore_ascii_case("root")
+                        || dest.eq_ignore_ascii_case("my drive")
+                    {
+                        "root".to_string()
+                    } else {
+                        match resolve_mcp_target(&client, dest).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                failed += 1;
+                                results.push(serde_json::json!({
+                                    "file_id": file_id,
+                                    "action": "move",
+                                    "status": "error",
+                                    "message": format!("Folder tujuan '{}' tidak ditemukan: {}", dest, e.message)
+                                }));
+                                continue;
+                            }
+                        }
+                    };
+                    match client.move_file(&file_id, &dest_id, None).await {
+                        Ok(moved) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "move",
+                                "status": "success",
+                                "data": moved
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "move",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                "trash" => match client.trash_file(&file_id).await {
+                    Ok(trashed) => {
+                        succeeded += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "trash",
+                            "status": "success",
+                            "data": trashed
+                        }));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "trash",
+                            "status": "error",
+                            "message": e.to_string()
+                        }));
+                    }
+                },
+                "restore" => match client.restore_trash_file(&file_id).await {
+                    Ok(restored) => {
+                        succeeded += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "restore",
+                            "status": "success",
+                            "data": restored
+                        }));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        results.push(serde_json::json!({
+                            "file_id": file_id,
+                            "action": "restore",
+                            "status": "error",
+                            "message": e.to_string()
+                        }));
+                    }
+                },
+                "copy" => {
+                    let dest_id = if let Some(d) = &op.target_folder {
+                        let dt = d.trim();
+                        if dt.eq_ignore_ascii_case("root") || dt.eq_ignore_ascii_case("my drive") {
+                            Some("root".to_string())
+                        } else {
+                            match resolve_mcp_target(&client, dt).await {
+                                Ok(id) => Some(id),
+                                Err(e) => {
+                                    failed += 1;
+                                    results.push(serde_json::json!({
+                                        "file_id": file_id,
+                                        "action": "copy",
+                                        "status": "error",
+                                        "message": format!("Folder tujuan copy '{}' tidak valid: {}", d, e.message)
+                                    }));
+                                    continue;
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    match client
+                        .copy_file(&file_id, op.new_name.as_deref(), dest_id.as_deref())
+                        .await
+                    {
+                        Ok(copied) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "copy",
+                                "status": "success",
+                                "data": copied
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "copy",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                "star" => {
+                    let starred_val = op.starred.unwrap_or(true);
+                    match client.star_file(&file_id, starred_val).await {
+                        Ok(starred_file) => {
+                            succeeded += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "star",
+                                "status": "success",
+                                "data": starred_file
+                            }));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            results.push(serde_json::json!({
+                                "file_id": file_id,
+                                "action": "star",
+                                "status": "error",
+                                "message": e.to_string()
+                            }));
+                        }
+                    }
+                }
+                other => {
+                    failed += 1;
+                    results.push(serde_json::json!({
+                        "file_id": file_id,
+                        "action": other,
+                        "status": "error",
+                        "message": format!(
+                            "Aksi '{}' tidak didukung. Aksi valid: move, trash, restore, copy, star.",
+                            other
+                        )
+                    }));
+                }
+            }
+        }
+
+        Ok(Json(ToolResponse {
+            result: serde_json::json!({
+                "total_operations": results.len(),
+                "succeeded": succeeded,
+                "failed": failed,
+                "results": results
+            }),
         }))
     }
 
@@ -1032,5 +1638,77 @@ mod tests {
         assert!(instructions.contains("gdrive_list_profiles"));
         assert!(instructions.contains("gdrive_switch_profile"));
         assert!(instructions.contains("gdrive_get_about"));
+        assert!(instructions.contains("gdrive_upload_file"));
+        assert!(instructions.contains("gdrive_export_file"));
+        assert!(instructions.contains("gdrive_list_tree"));
+        assert!(instructions.contains("gdrive_get_file_path"));
+        assert!(instructions.contains("gdrive_star_file"));
+        assert!(instructions.contains("gdrive_batch_ops"));
+    }
+
+    #[test]
+    fn test_map_export_format_success() {
+        assert_eq!(
+            map_export_format("pdf", "application/vnd.google-apps.document").unwrap(),
+            ("application/pdf", "pdf")
+        );
+        assert_eq!(
+            map_export_format(".pdf", "application/vnd.google-apps.document").unwrap(),
+            ("application/pdf", "pdf")
+        );
+        assert_eq!(
+            map_export_format("docx", "application/vnd.google-apps.document").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx"
+            )
+        );
+        assert_eq!(
+            map_export_format("xlsx", "application/vnd.google-apps.spreadsheet").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx"
+            )
+        );
+        assert_eq!(
+            map_export_format(".csv", "application/vnd.google-apps.spreadsheet").unwrap(),
+            ("text/csv", "csv")
+        );
+        assert_eq!(
+            map_export_format("pptx", "application/vnd.google-apps.presentation").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "pptx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_map_export_format_unsupported() {
+        assert!(map_export_format("mp4", "application/vnd.google-apps.document").is_err());
+        assert!(map_export_format("pdf", "image/png").is_err());
+    }
+
+    #[test]
+    fn test_expand_local_path() {
+        let p = expand_local_path("test.txt");
+        assert!(p.is_absolute());
+        let p_tilde = expand_local_path("~/test.txt");
+        assert!(p_tilde.is_absolute());
+        assert!(!p_tilde.to_string_lossy().contains('~'));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_mcp_target_empty_string_rejected() {
+        if let Ok(c) = GDriveClient::from_profile(Some("default")).await {
+            let res = resolve_mcp_target(&c, "   ").await;
+            assert!(res.is_err());
+            assert_eq!(
+                res.unwrap_err().code,
+                rmcp::model::ErrorCode::INVALID_PARAMS
+            );
+            let res_root = resolve_mcp_target(&c, "My Drive").await;
+            assert_eq!(res_root.unwrap(), "root");
+        }
     }
 }

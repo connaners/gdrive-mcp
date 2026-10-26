@@ -32,6 +32,21 @@ pub struct SearchFilesArgs {
     pub full_text: Option<bool>,
     /// Pengurutan hasil pencarian (contoh: 'modifiedTime desc', 'name', 'folder,name').
     pub order_by: Option<String>,
+    /// Filter jenis file: 'folder', 'doc', 'sheet', 'slide', 'pdf', 'image', 'video', atau 'archive' (opsional).
+    pub file_type: Option<String>,
+    /// Jika true, hanya tampilkan file yang dibintangi/difavoritkan (opsional).
+    pub starred_only: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_star_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StarFileArgs {
+    /// ID file atau folder di Google Drive yang ingin ditandai atau dicabut bintangnya.
+    pub file_id: String,
+    /// True untuk menambahkan bintang (star/favorite), false untuk mencabut bintang (unstar).
+    pub starred: bool,
     /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
     pub profile: Option<String>,
 }
@@ -66,12 +81,46 @@ pub struct ReadFileArgs {
     pub profile: Option<String>,
 }
 
+/// Parameter untuk tool gdrive_upload_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UploadFileArgs {
+    /// Path ke file lokal di disk yang ingin diunggah ke Google Drive (bisa absolut atau relatif).
+    pub local_path: String,
+    /// Nama file yang akan disimpan di Google Drive (opsional, jika tidak diisi menggunakan nama asli file lokal).
+    pub name: Option<String>,
+    /// ID folder tujuan di Google Drive (opsional, jika tidak diisi disimpan di root Drive).
+    pub parent_folder_id: Option<String>,
+    /// Jika true, otomatis mengonversi file teks/markdown menjadi native Google Docs yang dapat diedit di web.
+    pub as_google_doc: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFolderArgs {
     /// ID folder yang ingin dilihat isinya (opsional, kosongkan untuk root Drive).
     pub folder_id: Option<String>,
     /// Batas jumlah item yang ditampilkan (default: 50).
     pub page_size: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_list_tree
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTreeArgs {
+    /// ID folder awal atau 'root' (opsional, jika tidak diisi menggunakan root My Drive).
+    pub folder_id: Option<String>,
+    /// Kedalaman maksimal pohon folder (opsional, rentang 1-4, default: 2).
+    pub max_depth: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_get_file_path
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFilePathArgs {
+    /// ID file atau folder yang ingin diketahui jalur hierarki path lengkapnya.
+    pub file_id: String,
     /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
     pub profile: Option<String>,
 }
@@ -134,6 +183,21 @@ pub struct DownloadFileArgs {
     /// ID Google Drive, URL Google Drive, atau nama file yang ingin diunduh ke disk lokal.
     pub file_id_or_name: String,
     /// Path folder atau file tujuan penyimpanan lokal (opsional, default: direktori kerja saat ini).
+    pub destination_path: Option<String>,
+    /// Format ekspor jika file berupa Google Workspace docs (opsional: 'pdf', 'docx', 'xlsx', 'csv', 'txt', 'html').
+    pub export_format: Option<String>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_export_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportFileArgs {
+    /// ID file atau tautan Google Docs, Sheets, atau Slides yang ingin diekspor.
+    pub file_id: String,
+    /// Format tujuan ekspor: 'pdf', 'docx', 'xlsx', 'csv', 'txt', atau 'html'.
+    pub format: String,
+    /// Path lokasi penyimpanan file lokal hasil ekspor (opsional, jika kosong disimpan di direktori saat ini).
     pub destination_path: Option<String>,
     /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
     pub profile: Option<String>,
@@ -314,6 +378,30 @@ pub struct RunDoctorArgs {
     pub profile: Option<String>,
 }
 
+/// Satu item aksi dalam operasi batch file Google Drive
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BatchActionItem {
+    /// Tipe tindakan: 'move', 'trash', 'restore', 'copy', atau 'star'.
+    pub action: String,
+    /// ID file atau folder target.
+    pub file_id: String,
+    /// ID folder tujuan (wajib untuk aksi 'move', opsional untuk 'copy').
+    pub target_folder: Option<String>,
+    /// Nama baru file (opsional untuk aksi 'copy').
+    pub new_name: Option<String>,
+    /// Status bintang (wajib untuk aksi 'star': true untuk star, false untuk unstar).
+    pub starred: Option<bool>,
+}
+
+/// Parameter untuk tool gdrive_batch_ops
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BatchOpsArgs {
+    /// Daftar operasi yang ingin dijalankan secara massal (maksimal 25 item per pemanggilan).
+    pub operations: Vec<BatchActionItem>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +468,12 @@ mod tests {
         assert_no_raw_bool::<SwitchProfileArgs>();
         assert_no_raw_bool::<GetAboutArgs>();
         assert_no_raw_bool::<RunDoctorArgs>();
+        assert_no_raw_bool::<UploadFileArgs>();
+        assert_no_raw_bool::<ExportFileArgs>();
+        assert_no_raw_bool::<ListTreeArgs>();
+        assert_no_raw_bool::<GetFilePathArgs>();
+        assert_no_raw_bool::<StarFileArgs>();
+        assert_no_raw_bool::<BatchOpsArgs>();
+        assert_no_raw_bool::<BatchActionItem>();
     }
 }

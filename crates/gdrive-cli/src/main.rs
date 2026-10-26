@@ -68,6 +68,12 @@ enum Commands {
         /// Tampilkan output dalam format teks sederhana (ID | Name | Mime)
         #[arg(long)]
         plain: bool,
+        /// Filter jenis file ('folder', 'doc', 'sheet', 'slide', 'pdf', 'image', 'video', 'archive')
+        #[arg(long)]
+        file_type: Option<String>,
+        /// Hanya tampilkan file yang dibintangi/difavoritkan
+        #[arg(long)]
+        starred: bool,
     },
     /// Tampilkan informasi metadata detail file atau folder di Google Drive
     Info {
@@ -528,9 +534,12 @@ async fn dispatch_query_command(cmd: Commands) -> Result<Option<Commands>> {
             page_token,
             json,
             plain,
+            file_type,
+            starred,
         } => {
             handle_search(
-                query, folder, limit, full_text, order_by, page_token, json, plain,
+                query, folder, limit, full_text, order_by, page_token, json, plain, file_type,
+                starred,
             )
             .await?;
             Ok(None)
@@ -922,6 +931,8 @@ async fn handle_search(
     page_token: Option<String>,
     json: bool,
     plain: bool,
+    file_type: Option<String>,
+    starred: bool,
 ) -> Result<()> {
     let query_str = if query.is_empty() {
         None
@@ -943,6 +954,8 @@ async fn handle_search(
             page_token,
             full_text,
             order_by,
+            file_type,
+            starred_only: if starred { Some(true) } else { None },
         })
         .await?;
 
@@ -1712,6 +1725,32 @@ mod tests {
             Commands::Search { query, folder, .. } => {
                 assert!(query.is_empty());
                 assert_eq!(folder.as_deref(), Some("root"));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_search_file_type_and_starred_flags() {
+        let cli = Cli::try_parse_from([
+            "gdrive",
+            "search",
+            "report",
+            "--file-type",
+            "pdf",
+            "--starred",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Search {
+                query,
+                file_type,
+                starred,
+                ..
+            } => {
+                assert_eq!(query, vec!["report"]);
+                assert_eq!(file_type.as_deref(), Some("pdf"));
+                assert!(starred);
             }
             _ => panic!("Expected Search command"),
         }

@@ -666,6 +666,7 @@ mod tests {
             parents: None,
             size: size.map(ToString::to_string),
             modified_time: date.map(ToString::to_string),
+            starred: None,
         }
     }
 

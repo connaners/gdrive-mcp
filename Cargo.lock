@@ -743,6 +743,7 @@ name = "gdrive-mcp"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "futures-util",
  "gdrive-core",
  "rmcp",
