@@ -16,11 +16,11 @@ use std::io::Write;
 use crate::models::{
     AddCommentArgs, CheckUpdateArgs, CopyFileArgs, CreateFileArgs, CreateFolderArgs,
     DeletePermissionArgs, DownloadFileArgs, EmptyTrashArgs, ExportFileArgs, GetAboutArgs,
-    GetFileInfoArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs, ListDrivesArgs,
-    ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs,
-    MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
-    SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs,
-    UpdateFileArgs, UploadFileArgs,
+    GetFileInfoArgs, GetFilePathArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs,
+    ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs,
+    ListTrashArgs, ListTreeArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs,
+    RestoreFileArgs, RunDoctorArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs,
+    SwitchProfileArgs, TrashFileArgs, UpdateFileArgs, UploadFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -384,6 +384,49 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(files).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_list_tree",
+        description = "Melihat struktur pohon folder (folder tree) secara rekursif hingga kedalaman max_depth (1-4, default 2) dalam satu pemanggilan hemat token."
+    )]
+    pub async fn gdrive_list_tree(
+        &self,
+        Parameters(args): Parameters<ListTreeArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let root_id = args.folder_id.as_deref().unwrap_or("root");
+        let max_depth = args.max_depth.unwrap_or(2);
+
+        let tree = client
+            .get_folder_tree(root_id, max_depth)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(tree).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_get_file_path",
+        description = "Mendapatkan jalur hierarki folder lengkap (human-readable breadcrumbs path) dari root Drive sampai ke file atau folder tujuan."
+    )]
+    pub async fn gdrive_get_file_path(
+        &self,
+        Parameters(args): Parameters<GetFilePathArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+
+        let path_info = client
+            .get_file_breadcrumbs(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(path_info).unwrap_or(Value::Null),
         }))
     }
 

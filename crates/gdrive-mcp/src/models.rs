@@ -90,6 +90,26 @@ pub struct ListFolderArgs {
     pub profile: Option<String>,
 }
 
+/// Parameter untuk tool gdrive_list_tree
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTreeArgs {
+    /// ID folder awal atau 'root' (opsional, jika tidak diisi menggunakan root My Drive).
+    pub folder_id: Option<String>,
+    /// Kedalaman maksimal pohon folder (opsional, rentang 1-4, default: 2).
+    pub max_depth: Option<u32>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_get_file_path
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFilePathArgs {
+    /// ID file atau folder yang ingin diketahui jalur hierarki path lengkapnya.
+    pub file_id: String,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateFileArgs {
     /// Nama file yang akan dibuat (contoh: 'Spesifikasi-Sistem.md').
