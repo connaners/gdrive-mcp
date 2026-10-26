@@ -75,16 +75,14 @@ jobs:
           command: |
             mkdir -p dist
             cp target/release/gdrive dist/
-            tar -czvf dist/gdrive-linux-x86_64.tar.gz -C dist gdrive
-            cd dist && sha256sum gdrive-linux-x86_64.tar.gz > gdrive-linux-x86_64.tar.gz.sha256
+            tar -czvf dist/gdrive-x86_64-unknown-linux-gnu.tar.gz -C dist gdrive
+            cd dist && sha256sum gdrive-x86_64-unknown-linux-gnu.tar.gz > gdrive-x86_64-unknown-linux-gnu.tar.gz.sha256
+            cp gdrive-x86_64-unknown-linux-gnu.tar.gz gdrive-linux-x86_64.tar.gz
+            sha256sum gdrive-linux-x86_64.tar.gz > gdrive-linux-x86_64.tar.gz.sha256
 
       - store_artifacts:
-          path: dist/gdrive-linux-x86_64.tar.gz
-          destination: gdrive-linux-x86_64.tar.gz
-
-      - store_artifacts:
-          path: dist/gdrive-linux-x86_64.tar.gz.sha256
-          destination: gdrive-linux-x86_64.tar.gz.sha256
+          path: dist
+          destination: dist
 
       - run:
           name: Publish to GitHub Releases (if tag)
@@ -98,10 +96,10 @@ jobs:
               echo "Publishing release $CIRCLE_TAG..."
               if gh release view "$CIRCLE_TAG" &>/dev/null; then
                 echo "Release $CIRCLE_TAG already exists. Uploading release assets..."
-                gh release upload "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 --clobber
+                gh release upload "$CIRCLE_TAG" dist/*.tar.gz dist/*.sha256 --clobber
               else
                 echo "Creating release $CIRCLE_TAG and uploading assets..."
-                gh release create "$CIRCLE_TAG" dist/gdrive-linux-x86_64.tar.gz dist/gdrive-linux-x86_64.tar.gz.sha256 \
+                gh release create "$CIRCLE_TAG" dist/*.tar.gz dist/*.sha256 \
                   --title "$CIRCLE_TAG" \
                   --notes "Automated release build by CircleCI"
               fi

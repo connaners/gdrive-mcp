@@ -413,10 +413,45 @@ enum ProfileCommands {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum McpClient {
+    /// Claude Desktop configuration
+    Claude,
+    /// Cursor IDE configuration (~/.cursor/mcp.json)
+    Cursor,
+    /// Windsurf IDE configuration (~/.codeium/windsurf/mcp_config.json)
+    Windsurf,
+    /// Zed editor configuration (settings.json context_servers)
+    Zed,
+    /// Standard output preview only (raw JSON)
+    Json,
+}
+
 #[derive(Subcommand)]
 enum McpCommands {
     /// Jalankan MCP server via stdio (standard input/output)
     Serve,
+    /// Daftarkan gdrive MCP server secara otomatis ke client (Claude Desktop, Cursor, Windsurf, Zed)
+    Install {
+        /// Target client: claude, cursor, windsurf, zed, json
+        #[arg(short, long, default_value = "claude", value_enum)]
+        client: McpClient,
+        /// Nama server MCP dalam konfigurasi (default: "gdrive")
+        #[arg(short, long, default_value = "gdrive")]
+        name: String,
+        /// Profil Google Drive yang digunakan server (opsional, misal: "work")
+        #[arg(short, long)]
+        profile: Option<String>,
+        /// Path file konfigurasi kustom (mengabaikan lokasi default client)
+        #[arg(long)]
+        config_path: Option<PathBuf>,
+        /// Timpa konfigurasi server jika nama server sudah ada
+        #[arg(long)]
+        force: bool,
+        /// Tampilkan preview JSON konfigurasi tanpa menulis ke disk
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -1576,10 +1611,217 @@ async fn handle_revisions(action: RevisionsCommands) -> Result<()> {
     Ok(())
 }
 
+fn parse_json_or_jsonc(raw: &str) -> Result<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str(raw) {
+        return Ok(v);
+    }
+    let mut cleaned = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        cleaned.push_str(line);
+        cleaned.push('\n');
+    }
+    let val = serde_json::from_str(&cleaned)?;
+    Ok(val)
+}
+
+fn resolve_client_config_path(client: McpClient) -> Result<PathBuf> {
+    match client {
+        McpClient::Claude => {
+            let base = dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Gagal menemukan direktori konfigurasi pengguna"))?;
+            Ok(base.join("Claude").join("claude_desktop_config.json"))
+        }
+        McpClient::Cursor => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Gagal menemukan direktori home pengguna"))?;
+            Ok(home.join(".cursor").join("mcp.json"))
+        }
+        McpClient::Windsurf => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Gagal menemukan direktori home pengguna"))?;
+            Ok(home
+                .join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"))
+        }
+        McpClient::Zed => {
+            if cfg!(target_os = "macos") {
+                if let Some(app_support) =
+                    dirs::config_dir().map(|p| p.join("Zed").join("settings.json"))
+                {
+                    if app_support.exists() {
+                        return Ok(app_support);
+                    }
+                }
+            }
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Gagal menemukan direktori home pengguna"))?;
+            Ok(home.join(".config").join("zed").join("settings.json"))
+        }
+        McpClient::Json => unreachable!(),
+    }
+}
+
+fn build_mcp_server_entry(
+    client: McpClient,
+    bin_path: &str,
+    profile: Option<&str>,
+) -> serde_json::Value {
+    let args = if let Some(prof) = profile.filter(|s| !s.trim().is_empty()) {
+        vec![
+            "--profile".to_string(),
+            prof.trim().to_string(),
+            "mcp".to_string(),
+            "serve".to_string(),
+        ]
+    } else {
+        vec!["mcp".to_string(), "serve".to_string()]
+    };
+
+    match client {
+        McpClient::Zed => serde_json::json!({
+            "command": {
+                "path": bin_path,
+                "args": args,
+            }
+        }),
+        _ => serde_json::json!({
+            "command": bin_path,
+            "args": args,
+        }),
+    }
+}
+
+fn load_config_doc(target_path: &std::path::Path) -> Result<serde_json::Value> {
+    if !target_path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let raw = std::fs::read_to_string(target_path)
+        .with_context(|| format!("Gagal membaca file konfigurasi di {:?}", target_path))?;
+    let doc = match parse_json_or_jsonc(&raw) {
+        Ok(val) => val,
+        Err(e) => {
+            anyhow::bail!(
+                "File konfigurasi di {:?} tidak valid JSON/JSONC: {}. Silakan gunakan flag --dry-run untuk menyalin snippet secara manual.",
+                target_path,
+                e
+            );
+        }
+    };
+    if doc.is_object() {
+        Ok(doc)
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+fn write_config_atomic(target_path: &std::path::Path, doc: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Gagal membuat direktori {:?}", parent))?;
+    }
+
+    if target_path.exists() {
+        let bak_path = target_path.with_extension("json.bak");
+        let _ = std::fs::copy(target_path, &bak_path);
+    }
+
+    let tmp_path = target_path.with_extension(format!("tmp.{}", std::process::id()));
+    let formatted = serde_json::to_string_pretty(doc)?;
+    std::fs::write(&tmp_path, formatted)
+        .with_context(|| format!("Gagal menulis temporary config ke {:?}", tmp_path))?;
+
+    std::fs::rename(&tmp_path, target_path)
+        .with_context(|| format!("Gagal memindahkan file config ke {:?}", target_path))?;
+
+    Ok(())
+}
+
+async fn handle_mcp_install(
+    client: McpClient,
+    name: String,
+    profile: Option<String>,
+    config_path: Option<PathBuf>,
+    force: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let bin_path = std::env::current_exe()
+        .context("Gagal mendeteksi path executable saat ini")?
+        .to_string_lossy()
+        .to_string();
+
+    let server_entry = build_mcp_server_entry(client, &bin_path, profile.as_deref());
+
+    if client == McpClient::Json || dry_run {
+        let root_key = if client == McpClient::Zed {
+            "context_servers"
+        } else {
+            "mcpServers"
+        };
+        let preview = serde_json::json!({ root_key: { &name: server_entry } });
+        println!("{}", serde_json::to_string_pretty(&preview)?);
+        return Ok(());
+    }
+
+    let target_path = match config_path {
+        Some(path) => path,
+        None => resolve_client_config_path(client)?,
+    };
+    let root_key = if client == McpClient::Zed {
+        "context_servers"
+    } else {
+        "mcpServers"
+    };
+
+    let mut doc = load_config_doc(&target_path)?;
+    let servers_obj = doc.as_object_mut().unwrap();
+    if !servers_obj.contains_key(root_key) || !servers_obj[root_key].is_object() {
+        servers_obj.insert(root_key.to_string(), serde_json::json!({}));
+    }
+
+    let servers = servers_obj
+        .get_mut(root_key)
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    if servers.contains_key(&name) && !force {
+        anyhow::bail!(
+            "Server '{}' sudah terdaftar di {:?}. Gunakan flag --force untuk menimpa konfigurasi yang sudah ada.",
+            name,
+            target_path
+        );
+    }
+
+    servers.insert(name.clone(), server_entry);
+    write_config_atomic(&target_path, &doc)?;
+
+    eprintln!(
+        "✅ Berhasil mendaftarkan server '{}' ke konfigurasi {:?}",
+        name, target_path
+    );
+    println!("{}", target_path.display());
+
+    Ok(())
+}
+
 async fn handle_mcp(action: McpCommands) -> Result<()> {
     match action {
         McpCommands::Serve => {
             gdrive_mcp::run_stdio().await?;
+        }
+        McpCommands::Install {
+            client,
+            name,
+            profile,
+            config_path,
+            force,
+            dry_run,
+        } => {
+            handle_mcp_install(client, name, profile, config_path, force, dry_run).await?;
         }
     }
     Ok(())
@@ -1695,6 +1937,72 @@ async fn handle_self_update(check: bool, changelog: bool, json: bool) -> Result<
 mod tests {
     use super::*;
     use clap::Parser;
+    #[test]
+    fn test_mcp_install_command_parsing() {
+        let cli_default = Cli::try_parse_from(["gdrive", "mcp", "install"]).unwrap();
+        match cli_default.command.unwrap() {
+            Commands::Mcp { action } => match action {
+                McpCommands::Install {
+                    client,
+                    name,
+                    profile,
+                    config_path,
+                    force,
+                    dry_run,
+                } => {
+                    assert_eq!(client, McpClient::Claude);
+                    assert_eq!(name, "gdrive");
+                    assert!(profile.is_none());
+                    assert!(config_path.is_none());
+                    assert!(!force);
+                    assert!(!dry_run);
+                }
+                _ => panic!("Expected McpCommands::Install"),
+            },
+            _ => panic!("Expected Commands::Mcp"),
+        }
+
+        let cli_custom = Cli::try_parse_from([
+            "gdrive",
+            "mcp",
+            "install",
+            "--client",
+            "zed",
+            "--name",
+            "custom-gdrive",
+            "--profile",
+            "work",
+            "--config-path",
+            "/tmp/custom_config.json",
+            "--force",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli_custom.command.unwrap() {
+            Commands::Mcp { action } => match action {
+                McpCommands::Install {
+                    client,
+                    name,
+                    profile,
+                    config_path,
+                    force,
+                    dry_run,
+                } => {
+                    assert_eq!(client, McpClient::Zed);
+                    assert_eq!(name, "custom-gdrive");
+                    assert_eq!(profile.as_deref(), Some("work"));
+                    assert_eq!(
+                        config_path.as_deref(),
+                        Some(std::path::Path::new("/tmp/custom_config.json"))
+                    );
+                    assert!(force);
+                    assert!(dry_run);
+                }
+                _ => panic!("Expected McpCommands::Install"),
+            },
+            _ => panic!("Expected Commands::Mcp"),
+        }
+    }
 
     #[test]
     fn test_search_multi_word_unquoted() {

@@ -7,5 +7,6 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 echo "Setting up git hooks for gdrive-mcp..."
 mkdir -p "${ROOT_DIR}/.githooks"
 chmod +x "${ROOT_DIR}/.githooks/pre-commit"
+chmod +x "${ROOT_DIR}/.githooks/pre-push"
 git config core.hooksPath .githooks
-echo "✓ Git hooks configured to .githooks (pre-commit active)."
+echo "✓ Git hooks configured to .githooks (pre-commit & pre-push active)."

@@ -9,7 +9,4 @@ cargo fmt --all -- --check
 echo "  -> cargo clippy..."
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "  -> fast tests..."
-cargo test --workspace
-
-echo "✓ All pre-commit checks passed!"
+echo "✓ All pre-commit checks passed (fmt & clippy clean)!"
