@@ -59,7 +59,11 @@ run_step "6" "TUI Headless Render Tests" cargo test -p gdrive-tui --test tui_ren
 
 # 7. Security & Secret Leaks (Rule 4)
 run_step "7" "Security & Secret Leaks Guard (Rule 4)" cargo test -p gdrive-cli --test security_tests
-
+if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then
+    run_step "7b" "Dependency Vulnerability Audit" cargo audit --deny warnings
+else
+    echo -e "${YELLOW}ℹ cargo-audit tidak terpasang di PATH; melewati audit kerentanan dependensi opsional.${NC}"
+fi
 # Bonus: Installer test script
 echo ""
 echo -e "${BLUE}${BOLD}[Bonus] Installer Test Script (install.sh)...${NC}"

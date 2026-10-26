@@ -7,12 +7,12 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 echo "=== Running Installer Script Verification Suite (scripts/test_install.sh) ==="
 
 # 1. Syntax check
-echo "[1/4] Checking bash syntax of install.sh..."
+echo "[1/5] Checking bash syntax of install.sh..."
 bash -n "${ROOT_DIR}/install.sh"
 echo "  ✓ install.sh syntax is valid"
 
 # 2. Unsupported OS rejection check
-echo "[2/4] Testing unsupported OS rejection..."
+echo "[2/5] Testing unsupported OS rejection..."
 MOCK_BIN_DIR="$(mktemp -d)"
 cat << 'EOF' > "${MOCK_BIN_DIR}/uname"
 #!/usr/bin/env bash
@@ -40,9 +40,8 @@ if [[ "${OS_TEST_OUTPUT}" != *"tidak didukung"* ]]; then
 fi
 echo "  ✓ Unsupported OS properly rejected"
 
-# 3. Test installation with prebuilt binary placement (mocked download)
-echo "[3/4] Testing simulated release binary download and placement..."
-
+# 3. Test installation with prebuilt binary placement (primary asset download)
+echo "[3/5] Testing simulated primary release binary download and placement..."
 # Build target binary if not present
 if [ ! -f "${ROOT_DIR}/target/debug/gdrive" ]; then
     echo "  Building local debug gdrive binary for test harness..."
@@ -83,12 +82,74 @@ chmod +x "${MOCK_CURL_DIR}/curl"
 
 # Run install.sh with mocked curl and custom isolated INSTALL_DIR
 INSTALL_OUTPUT=$(PATH="${MOCK_CURL_DIR}:${PATH}" INSTALL_DIR="${TEMP_INSTALL_DIR}" bash "${ROOT_DIR}/install.sh" 2>&1)
-
-# Cleanup mocks
 rm -rf "${MOCK_CURL_DIR}"
 
-# 4. Assertions on installed artifact
-echo "[4/4] Validating installed binary..."
+# 4. Test Linux fallback naming when primary asset returns 404
+echo "[4/5] Testing simulated Linux fallback asset resolution (HTTP 404 on primary)..."
+MOCK_FALLBACK_DIR="$(mktemp -d)"
+TEMP_FALLBACK_INSTALL_DIR="${SANDBOX_DIR}/fallback_install_dest"
+
+cat << 'EOF' > "${MOCK_FALLBACK_DIR}/uname"
+#!/usr/bin/env bash
+case "$1" in
+    -s) echo "Linux" ;;
+    -m) echo "x86_64" ;;
+    *) /usr/bin/uname "$@" ;;
+esac
+EOF
+chmod +x "${MOCK_FALLBACK_DIR}/uname"
+
+cat << EOF > "${MOCK_FALLBACK_DIR}/curl"
+#!/usr/bin/env bash
+output_file=""
+url=""
+while [ \$# -gt 0 ]; do
+    if [ "\$1" = "-o" ]; then
+        output_file="\$2"
+        shift 2
+    elif [[ "\$1" =~ ^https?:// ]]; then
+        url="\$1"
+        shift
+    else
+        shift
+    fi
+done
+
+# If URL points to primary target triple asset, simulate 404
+if [[ "\${url}" == *"unknown-linux-gnu"* ]]; then
+    exit 22
+fi
+
+# Fallback gdrive-linux-x86_64.tar.gz succeeds
+if [ -n "\${output_file}" ]; then
+    cp "${SANDBOX_DIR}/mock_asset.tar.gz" "\${output_file}"
+    exit 0
+else
+    exit 1
+fi
+EOF
+chmod +x "${MOCK_FALLBACK_DIR}/curl"
+
+FALLBACK_OUTPUT=$(PATH="${MOCK_FALLBACK_DIR}:${PATH}" INSTALL_DIR="${TEMP_FALLBACK_INSTALL_DIR}" bash "${ROOT_DIR}/install.sh" 2>&1)
+rm -rf "${MOCK_FALLBACK_DIR}"
+
+if [[ "${FALLBACK_OUTPUT}" != *"Mencoba fallback"* ]]; then
+    echo "  ✗ Expected fallback notice in output, got:"
+    echo "${FALLBACK_OUTPUT}"
+    rm -rf "${SANDBOX_DIR}"
+    exit 1
+fi
+
+FALLBACK_BIN="${TEMP_FALLBACK_INSTALL_DIR}/gdrive"
+if [ ! -x "${FALLBACK_BIN}" ]; then
+    echo "  ✗ Fallback installed binary '${FALLBACK_BIN}' is not executable!"
+    rm -rf "${SANDBOX_DIR}"
+    exit 1
+fi
+echo "  ✓ Fallback asset correctly recognized, unpacked, and verified on simulated Linux"
+
+# 5. Assertions on installed artifact
+echo "[5/5] Validating installed binary..."
 INSTALLED_BIN="${TEMP_INSTALL_DIR}/gdrive"
 if [ ! -f "${INSTALLED_BIN}" ]; then
     echo "  ✗ Installed binary '${INSTALLED_BIN}' does not exist!"

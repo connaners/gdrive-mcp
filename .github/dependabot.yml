@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # ── Rust dependencies ──────────────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Jakarta"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    # Group non-breaking Rust dep updates into a single weekly PR
+    groups:
+      rust-deps:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Jakarta"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"

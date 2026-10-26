@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+REMOTE="${1:-origin}"
+URL="${2:-}"
+
+echo "==> Running pre-push maintainer checks (remote: ${REMOTE})..."
+
+# Read pushed refs from stdin: <local_ref> <local_oid> <remote_ref> <remote_oid>
+PROTECTED_BRANCH_ERRORS=0
+LEAK_ERRORS=0
+HAS_CONTENT_PUSH=0
+PROCESSED_REFS=0
+
+if [ ! -t 0 ]; then
+    while read -r local_ref local_oid remote_ref remote_oid; do
+        [ -z "${local_ref}" ] && continue
+        PROCESSED_REFS=$((PROCESSED_REFS + 1))
+
+        # Branch deletion guard: local_oid all zeros or (delete)
+        if [ "${local_oid}" = "0000000000000000000000000000000000000000" ] || [ "${local_ref}" = "(delete)" ]; then
+            echo "  [pre-push] Branch deletion detected for ${remote_ref}. Skipping push validation."
+            continue
+        fi
+
+        HAS_CONTENT_PUSH=1
+
+        # Branch protection guard: prevent pushing directly to main / master
+        TARGET_BRANCH="${remote_ref#refs/heads/}"
+        if [ "${TARGET_BRANCH}" = "main" ] || [ "${TARGET_BRANCH}" = "master" ]; then
+            if [ "${GDRIVE_ALLOW_DIRECT_MAIN_PUSH:-0}" != "1" ]; then
+                echo "  ❌ Direct push to '${TARGET_BRANCH}' on remote '${REMOTE}' is blocked!"
+                echo "     Please push to a feature branch and create a Pull Request."
+                echo "     (Override for emergency hotfixes: GDRIVE_ALLOW_DIRECT_MAIN_PUSH=1 git push)"
+                PROTECTED_BRANCH_ERRORS=$((PROTECTED_BRANCH_ERRORS + 1))
+            fi
+        fi
+
+        # Playground branch guard
+        if [[ "${TARGET_BRANCH}" == preview-all* ]] || [[ "${TARGET_BRANCH}" == local* ]]; then
+            echo "  ❌ Pushing playground/temporary branch '${TARGET_BRANCH}' is blocked!"
+            PROTECTED_BRANCH_ERRORS=$((PROTECTED_BRANCH_ERRORS + 1))
+        fi
+
+        # Secret leak detection in commits being pushed
+        # Determine base revision
+        BASE_REV=""
+        if [ "${remote_oid}" = "0000000000000000000000000000000000000000" ]; then
+            # New branch being pushed; compare against merge-base with origin/main or main
+            if git rev-parse --verify origin/main >/dev/null 2>&1; then
+                BASE_REV="$(git merge-base "${local_oid}" origin/main 2>/dev/null || true)"
+            elif git rev-parse --verify main >/dev/null 2>&1; then
+                BASE_REV="$(git merge-base "${local_oid}" main 2>/dev/null || true)"
+            fi
+            if [ -z "${BASE_REV}" ]; then
+                BASE_REV="${local_oid}^"
+            fi
+        else
+            BASE_REV="${remote_oid}"
+        fi
+
+        if [ -n "${BASE_REV}" ] && git rev-parse --verify "${BASE_REV}" >/dev/null 2>&1; then
+            echo "  -> Inspecting commit diff (${BASE_REV:0:8}..${local_oid:0:8}) for potential secret leaks..."
+            DIFF_OUTPUT="$(git diff "${BASE_REV}..${local_oid}" -- . ':!.githooks/*' ':!*.md' || true)"
+            # Check patterns
+            if echo "${DIFF_OUTPUT}" | grep -Ei "client_secret.*:.*[\"'][a-zA-Z0-9_-]{20,}[\"']|ya29\.[a-zA-Z0-9_-]{20,}|BEGIN PRIVATE KEY|\"type\": \"service_account\"" >/dev/null 2>&1; then
+                echo "  ❌ Detected potential secrets in diff (${BASE_REV:0:8}..${local_oid:0:8})!"
+                LEAK_ERRORS=$((LEAK_ERRORS + 1))
+            fi
+        fi
+    done
+else
+    # Invoked manually in terminal without stdin pipe
+    HAS_CONTENT_PUSH=1
+fi
+
+if [ "${PROTECTED_BRANCH_ERRORS}" -gt 0 ]; then
+    echo "❌ Pre-push check failed due to branch protection violations."
+    exit 1
+fi
+
+if [ "${LEAK_ERRORS}" -gt 0 ]; then
+    echo "❌ Pre-push check failed due to secret leaks. Review commits before pushing."
+    exit 1
+fi
+
+# If all pushed refs were branch deletions, skip smoke tests and exit 0 immediately
+if [ "${PROCESSED_REFS}" -gt 0 ] && [ "${HAS_CONTENT_PUSH}" -eq 0 ]; then
+    echo "✓ Only branch deletions detected. Skipping full smoke test suite."
+    exit 0
+fi
+
+# Run smoke test suite
+echo "  -> Executing full smoke test suite before push..."
+bash "${ROOT_DIR}/scripts/smoke_test.sh"
+
+echo "✓ All pre-push checks passed! Safe to push."

@@ -22,9 +22,9 @@ timeout_seconds = 600
 
 [[commands]]
 name = "dependency-audit"
-command = "cargo audit --deny warnings"
-required = true
-enabled = false
+command = "sh -c 'if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then cargo audit --deny warnings; else echo \"cargo-audit not installed; skipping audit\"; fi'"
+required = false
+enabled = true
 timeout_seconds = 600
 
 [[commands]]
