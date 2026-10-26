@@ -255,21 +255,23 @@ impl GDriveClient {
         if let Some(ft) = &opts.file_type {
             let ft_lower = ft.trim().to_lowercase();
             match ft_lower.as_str() {
-                "folder" => {
+                "folder" | "folders" | "dir" | "directory" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.folder'".to_string())
                 }
-                "doc" => {
+                "doc" | "docs" | "document" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.document'".to_string())
                 }
-                "sheet" => {
+                "sheet" | "sheets" | "spreadsheet" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.spreadsheet'".to_string())
                 }
-                "slide" => q_parts
+                "slide" | "slides" | "presentation" => q_parts
                     .push("mimeType = 'application/vnd.google-apps.presentation'".to_string()),
                 "pdf" => q_parts.push("mimeType = 'application/pdf'".to_string()),
-                "image" => q_parts.push("mimeType contains 'image/'".to_string()),
-                "video" => q_parts.push("mimeType contains 'video/'".to_string()),
-                "archive" => q_parts.push(
+                "image" | "images" | "photo" | "photos" => {
+                    q_parts.push("mimeType contains 'image/'".to_string())
+                }
+                "video" | "videos" => q_parts.push("mimeType contains 'video/'".to_string()),
+                "archive" | "archives" | "zip" => q_parts.push(
                     "(mimeType contains 'zip' or mimeType contains 'tar' or mimeType contains 'rar' or mimeType contains 'compressed')".to_string(),
                 ),
                 other => {
@@ -1977,6 +1979,29 @@ mod tests {
         assert!(q.contains("name contains 'laporan'"));
         assert!(q.contains("mimeType = 'application/pdf'"));
         assert!(q.contains("starred = true"));
+    }
+
+    #[test]
+    fn test_build_search_query_aliases() {
+        let opts_sheet = SearchFileOptions {
+            file_type: Some("spreadsheet".to_string()),
+            ..Default::default()
+        };
+        assert!(GDriveClient::build_search_query(&opts_sheet)
+            .contains("mimeType = 'application/vnd.google-apps.spreadsheet'"));
+
+        let opts_doc = SearchFileOptions {
+            file_type: Some("document".to_string()),
+            ..Default::default()
+        };
+        assert!(GDriveClient::build_search_query(&opts_doc)
+            .contains("mimeType = 'application/vnd.google-apps.document'"));
+
+        let opts_img = SearchFileOptions {
+            file_type: Some("images".to_string()),
+            ..Default::default()
+        };
+        assert!(GDriveClient::build_search_query(&opts_img).contains("mimeType contains 'image/'"));
     }
 
     #[test]

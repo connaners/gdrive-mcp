@@ -114,7 +114,7 @@ fn map_export_format(
     format_str: &str,
     mime_type: &str,
 ) -> Result<(&'static str, &'static str), ErrorData> {
-    let fmt = format_str.trim().to_lowercase();
+    let fmt = format_str.trim().trim_start_matches('.').to_lowercase();
     match mime_type {
         "application/vnd.google-apps.document" => match fmt.as_str() {
             "pdf" => Ok(("application/pdf", "pdf")),
@@ -1632,5 +1632,57 @@ mod tests {
         assert!(instructions.contains("gdrive_get_file_path"));
         assert!(instructions.contains("gdrive_star_file"));
         assert!(instructions.contains("gdrive_batch_ops"));
+    }
+
+    #[test]
+    fn test_map_export_format_success() {
+        assert_eq!(
+            map_export_format("pdf", "application/vnd.google-apps.document").unwrap(),
+            ("application/pdf", "pdf")
+        );
+        assert_eq!(
+            map_export_format(".pdf", "application/vnd.google-apps.document").unwrap(),
+            ("application/pdf", "pdf")
+        );
+        assert_eq!(
+            map_export_format("docx", "application/vnd.google-apps.document").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "docx"
+            )
+        );
+        assert_eq!(
+            map_export_format("xlsx", "application/vnd.google-apps.spreadsheet").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "xlsx"
+            )
+        );
+        assert_eq!(
+            map_export_format(".csv", "application/vnd.google-apps.spreadsheet").unwrap(),
+            ("text/csv", "csv")
+        );
+        assert_eq!(
+            map_export_format("pptx", "application/vnd.google-apps.presentation").unwrap(),
+            (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "pptx"
+            )
+        );
+    }
+
+    #[test]
+    fn test_map_export_format_unsupported() {
+        assert!(map_export_format("mp4", "application/vnd.google-apps.document").is_err());
+        assert!(map_export_format("pdf", "image/png").is_err());
+    }
+
+    #[test]
+    fn test_expand_local_path() {
+        let p = expand_local_path("test.txt");
+        assert!(p.is_absolute());
+        let p_tilde = expand_local_path("~/test.txt");
+        assert!(p_tilde.is_absolute());
+        assert!(!p_tilde.to_string_lossy().contains('~'));
     }
 }
