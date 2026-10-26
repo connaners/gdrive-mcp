@@ -12,11 +12,14 @@ High-performance, schema-safe **Google Drive CLI & Model Context Protocol (MCP) 
 ## ✨ Features
 
 - **Dual-Mode Capability:** Standalone developer CLI (`gdrive search`, `gdrive upload`, etc.) + Model Context Protocol (MCP) server over `stdio`.
+- **Interactive Terminal UI (TUI):** Full terminal user interface powered by Ratatui for browsing files, viewing folder trees, managing profiles, reviewing comments, and inspecting trash visually.
+- **Multi-Account Profiles:** Switch effortlessly between multiple Google accounts (`work`, `personal`, etc.) with independent token storage.
 - **Seamless OAuth2 Authentication:** One-command interactive login with a local loopback server (`http://127.0.0.1:8085`) and remote/headless fallback for headless servers.
 - **Proactive & Reactive Auto-Refresh:** Never worry about expired access tokens—automatic proactive refresh before expiration and reactive retry on HTTP 401.
 - **Full Shared Drives Support:** Transparently access and manage team files across all enterprise Shared Drives (`supportsAllDrives=true`, `includeItemsFromAllDrives=true`).
-- **Auto-Export Google Docs:** Automatically converts native Google Docs/Sheets into readable Markdown/Plain text for AI agents.
-- **Safe Trash:** Prevents catastrophic accidental data loss by utilizing Google Drive's trash bin rather than permanent deletions.
+- **Auto-Export & Multi-Format Documents:** Automatically converts native Google Docs/Sheets into readable Markdown/CSV, plus export capabilities to PDF, DOCX, and XLSX.
+- **Safe Trash & Lifecycle:** Prevents catastrophic accidental data loss by utilizing Google Drive's trash bin with untrash recovery rather than permanent deletions.
+- **Diagnostics & Self-Update:** Built-in `doctor` command to diagnose environment, tokens, and API connectivity, plus one-command in-place `self-update`.
 - **Zero-Pollution JSON-RPC:** Strict stdio isolation—all diagnostic logs are directed to `stderr`, keeping `stdout` pristine for JSON-RPC 2.0 frames.
 - **Strict Schema Safety:** Every tool argument parameter is typed and documented with complete metadata, preventing HTTP 400 schema validation errors on Gemini, Claude, and OpenAI backends.
 
@@ -124,25 +127,29 @@ Google Drive CLI & MCP Server
 Usage: gdrive <COMMAND>
 
 Commands:
-  auth      Manajemen autentikasi Google OAuth2 (login, status, logout)
-  search    Cari file atau folder di Google Drive (support kata jamak tanpa petik, full-text, & order-by)
-  info      Tampilkan informasi metadata detail file atau folder di Google Drive
-  copy      Salin (duplicate) file di Google Drive
-  rename    Ganti nama file atau folder di Google Drive
-  move      Pindahkan file atau folder ke folder tujuan
-  read      Baca isi file dari Google Drive (teks / markdown / docs / sheets / slides)
-  create    Buat dokumen baru dari teks langsung
-  update    Perbarui isi file yang sudah ada di Google Drive
-  upload    Upload file lokal dari disk ke Google Drive
-  download  Download file dari Google Drive ke disk lokal
-  mkdir     Buat folder baru di Google Drive
-  trash        Kelola tempat sampah (Trash) Google Drive
+  auth         Manajemen autentikasi Google OAuth2 (login, setup, status, logout, profile)
+  about        Tampilkan informasi akun Google Drive dan kuota penyimpanan (storage quota)
+  search       Cari file atau folder di Google Drive (support kata jamak, full-text, file-type & starred)
+  info         Tampilkan informasi metadata detail file atau folder di Google Drive
+  copy         Salin (duplicate) file di Google Drive
+  rename       Ganti nama file atau folder di Google Drive
+  move         Pindahkan file atau folder ke folder tujuan
+  read         Baca isi file dari Google Drive (teks / markdown / docs / sheets / slides)
+  create       Buat dokumen baru dari teks langsung
+  update       Perbarui isi file yang sudah ada di Google Drive (overwrite atau append)
+  upload       Upload file lokal dari disk ke Google Drive (otomatis deteksi MIME)
+  download     Download file dari Google Drive ke disk lokal (support format ekspor Docs)
+  mkdir        Buat folder baru di Google Drive
+  trash        Kelola tempat sampah (Trash) Google Drive (list, put, restore, empty)
   drives       Tampilkan daftar Shared Drives (Team Drives) yang dapat diakses
   share        Bagikan file atau folder ke pengguna, grup, domain, atau publik (anyone)
   permissions  Kelola hak akses (permissions) file atau folder di Google Drive
   comments     Kelola komentar dan review pada file di Google Drive
   revisions    Kelola riwayat revisi (versi) file di Google Drive
   mcp          Jalankan MCP server untuk AI agents (Hermes, Claude, OpenCode)
+  self-update  Periksa dan perbarui binary aplikasi gdrive ke versi terbaru dari GitHub Releases
+  tui          Buka Terminal User Interface (TUI) interaktif untuk navigasi Google Drive
+  doctor       Jalankan pemeriksaan diagnostik lingkungan kerja, kredensial, konektivitas, dan terminal
 ```
 
 ### Examples
@@ -234,6 +241,58 @@ gdrive revisions download 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms rev_id_12
 gdrive auth profile list
 gdrive auth profile switch work
 gdrive --profile personal search "Invoice"
+
+# Account identity & storage quota
+gdrive about
+gdrive about --json
+
+# Environment diagnostics & system health
+gdrive doctor
+
+# Self-update binary to latest release
+gdrive self-update --check
+gdrive self-update
+
+# Launch interactive Terminal User Interface (TUI)
+gdrive tui
+gdrive tui --demo
+```
+
+---
+
+## 🖥️ Interactive Terminal User Interface (TUI)
+
+`gdrive-mcp` menyertakan Terminal User Interface (TUI) interaktif berbasis `ratatui` untuk menjelajahi dan mengelola Google Drive layaknya file manager modern di dalam terminal Anda.
+
+```bash
+# Jalankan TUI interaktif dengan akun Google Drive aktif
+gdrive tui
+
+# Buka folder spesifik langsung di TUI
+gdrive tui --folder 1A2B3C4D5E
+
+# Mode demo interaktif dengan mock data (tanpa perlu login Google)
+gdrive tui --demo
+```
+
+### Navigasi & Shortcut Utama TUI
+
+| Shortcut | Aksi / Fungsi |
+|:---|:---|
+| `↑` / `↓` atau `j` / `k` | Navigasi kursor naik atau turun pada daftar file dan folder |
+| `Enter` | Masuk ke folder atau buka pratinjau detail file |
+| `Backspace` atau `h` | Kembali ke folder induk (naik satu tingkat) |
+| `/` | Buka modal live search & filter seketika |
+| `p` | Buka modal manajemen profil akun (multi-account switcher) |
+| `s` | Buka modal pembagian file & pengelolaan permissions |
+| `c` | Buka modal komentar dan review diskusi dokumen |
+| `r` | Buka modal riwayat revisi / versi masa lalu |
+| `t` | Buka tampilan tempat sampah (*Trash view*) untuk pulihkan file |
+| `a` | Tampilkan modal About & kuota penyimpanan (*storage quota bar*) |
+| `d` | Jalankan diagnostik Doctor lingkungan kerja |
+| `u` | Periksa dan jalankan Self-Update versi terbaru |
+| `?` | Tampilkan modal bantuan shortcut (*Help*) |
+| `Esc` / `q` | Tutup modal aktif atau keluar dari TUI |
 ```
 
 ---
