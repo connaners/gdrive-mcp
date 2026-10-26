@@ -219,20 +219,24 @@ impl ServerHandler for GDriveMcpServer {
             "Use gdrive_list_profiles to see configured Google Drive accounts/profiles and which one is active. \
             Use gdrive_switch_profile to switch the active profile. \
             Use gdrive_get_about to check storage quota (usage and limits) and current user identity. \
-            Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, and pagination. \
+            Use gdrive_search to find files and folders across personal and shared drives with optional full-text search, ordering, pagination, file_type filter, and starred_only filter. \
             Use gdrive_read_file to read document contents (auto-converts Google Docs to markdown, Sheets to CSV, Slides to text). \
-            Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date) without reading full contents. \
+            Use gdrive_get_file_info to inspect file or folder metadata (size, mime type, parents, webViewLink, modified date, starred) without reading full contents. \
+            Use gdrive_get_file_path to get the complete human-readable folder breadcrumbs path from root to the file. \
+            Use gdrive_list_tree to explore recursive folder hierarchy trees up to max_depth in a single token-efficient call. \
             Use gdrive_create_file to write or upload documents, with optional conversion to native Google Docs. \
+            Use gdrive_upload_file to upload any local file from disk (PDF, script, image, zip, doc) to Google Drive. \
+            Use gdrive_export_file to export Google Docs, Sheets, or Slides to standard formats (PDF, DOCX, XLSX, CSV, TXT, HTML). \
             Use gdrive_update_file to modify or append content to existing files. \
             Use gdrive_copy_file to duplicate files with optional new name or destination folder. \
+            Use gdrive_star_file to star (favorite) or unstar a file or folder. \
+            Use gdrive_batch_ops to execute multiple file operations (move, trash, restore, copy, star) in one batch call. \
             Use gdrive_create_folder to create directories. \
             Use gdrive_rename_file to rename a file or folder. \
             Use gdrive_move_file to move a file or folder to a target folder. \
             Use gdrive_trash_file to safely move files or folders to trash. \
             Use gdrive_list_drives to list accessible Shared Drives. \
-            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name. \
-            Use gdrive_list_permissions to view who has access to a file or folder. \
-            Use gdrive_share_file to share a file or folder with users, groups, domains, or anyone with link. \
+            Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name, with optional export_format for Workspace docs. \
             Use gdrive_delete_permission to revoke access for a specific permission ID. \
             Use gdrive_get_shareable_link to get the web view link with optional automatic public sharing. \
             Use gdrive_list_comments to view comments and discussions on a document. \
@@ -1563,5 +1567,11 @@ mod tests {
         assert!(instructions.contains("gdrive_list_profiles"));
         assert!(instructions.contains("gdrive_switch_profile"));
         assert!(instructions.contains("gdrive_get_about"));
+        assert!(instructions.contains("gdrive_upload_file"));
+        assert!(instructions.contains("gdrive_export_file"));
+        assert!(instructions.contains("gdrive_list_tree"));
+        assert!(instructions.contains("gdrive_get_file_path"));
+        assert!(instructions.contains("gdrive_star_file"));
+        assert!(instructions.contains("gdrive_batch_ops"));
     }
 }
