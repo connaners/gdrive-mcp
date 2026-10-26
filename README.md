@@ -293,7 +293,6 @@ gdrive tui --demo
 | `u` | Periksa dan jalankan Self-Update versi terbaru |
 | `?` | Tampilkan modal bantuan shortcut (*Help*) |
 | `Esc` / `q` | Tutup modal aktif atau keluar dari TUI |
-```
 
 ---
 
