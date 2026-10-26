@@ -1,6 +1,6 @@
 # MCP Feature Parity & Seamless Agent Enhancements Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Menghadirkan paritas fitur lengkap dan pengalaman yang seamless pada `gdrive-mcp` dengan menambahkan 6 kapabilitas baru (`upload_file`, `export_file`, `list_tree`, `get_file_path`, `star_file`, `batch_ops`), filter cerdas pada `gdrive_search`, multi-format download, prompt instructions baru, serta sinkronisasi release binary.
 
@@ -12,7 +12,7 @@
 
 ## Ringkasan Fitur yang Di-update / Ditambahkan
 
-Total ada **7 peningkatan utama (32+ tools total)**:
+Total ada **7 peningkatan utama (37 tools total)**:
 
 1. 📤 **`gdrive_upload_file` (New Tool)**: Mengunggah file lokal apapun (PDF, script, gambar, zip, dokumen) dari disk ke Google Drive dengan deteksi MIME otomatis dan opsional konversi ke native Google Docs.
 2. 📄 **`gdrive_export_file` & Multi-Format Download (New Tool & Enhanced Tool)**: 
@@ -65,7 +65,7 @@ Total ada **7 peningkatan utama (32+ tools total)**:
 - Modify: `crates/gdrive-core/src/client.rs`
 - Test: `crates/gdrive-core/tests/client_test.rs` (atau unit test di `models.rs`/`client.rs`)
 
-- [ ] **Step 1: Write unit tests for new query building and model serialization**
+- [x] **Step 1: Write unit tests for new query building and model serialization**
 Tambah test di `crates/gdrive-core/src/client.rs`:
 ```rust
 #[test]
@@ -88,11 +88,11 @@ fn test_build_search_query_with_file_type_and_starred() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [x] **Step 2: Run test to verify failure**
 Run: `cargo test -p gdrive-core -- test_build_search_query_with_file_type_and_starred`
 Expected: FAIL (fields `file_type` and `starred_only` do not exist).
 
-- [ ] **Step 3: Update `models.rs` and `client.rs` in `gdrive-core`**
+- [x] **Step 3: Update `models.rs` and `client.rs` in `gdrive-core`**
 1. Tambahkan `starred` pada `DriveFile`:
 ```rust
 #[serde(default)]
@@ -106,11 +106,11 @@ pub starred_only: Option<bool>,
 3. Update `build_search_query` di `client.rs` untuk memetakan `file_type` ke MIME query dan `starred_only` ke `starred = true`.
 4. Tambahkan method `star_file`, `export_file_bytes`, `get_file_breadcrumbs`, dan `get_folder_tree` di `client.rs`.
 
-- [ ] **Step 4: Run test to verify pass**
+- [x] **Step 4: Run test to verify pass**
 Run: `cargo test -p gdrive-core`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 ```bash
 git add crates/gdrive-core
 git commit -m "feat(core): add star, export, tree, breadcrumbs APIs and search filter options"
@@ -125,7 +125,7 @@ git commit -m "feat(core): add star, export, tree, breadcrumbs APIs and search f
 - Modify: `crates/gdrive-mcp/src/server.rs`
 - Test: `crates/gdrive-cli/tests/mcp_stdio_contract.rs`
 
-- [ ] **Step 1: Define `UploadFileArgs` in `crates/gdrive-mcp/src/models.rs`**
+- [x] **Step 1: Define `UploadFileArgs` in `crates/gdrive-mcp/src/models.rs`**
 ```rust
 /// Parameter untuk tool gdrive_upload_file
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -143,14 +143,14 @@ pub struct UploadFileArgs {
 }
 ```
 
-- [ ] **Step 2: Add `#[tool(name = "gdrive_upload_file", ...)]` in `crates/gdrive-mcp/src/server.rs`**
+- [x] **Step 2: Add `#[tool(name = "gdrive_upload_file", ...)]` in `crates/gdrive-mcp/src/server.rs`**
 Implementasikan pemanggilan `client.upload_file_path(...)` dengan verifikasi path lokal exists, canonicalization, dan respon metadata file hasil upload (`id`, `name`, `webViewLink`, `size`, `mimeType`).
 
-- [ ] **Step 3: Run contract check**
+- [x] **Step 3: Run contract check**
 Run: `cargo test -p gdrive-cli --test mcp_stdio_contract`
 Expected: PASS with `gdrive_upload_file` registered and schema-compliant.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add crates/gdrive-mcp
 git commit -m "feat(mcp): add gdrive_upload_file tool for local disk uploads"
@@ -164,7 +164,7 @@ git commit -m "feat(mcp): add gdrive_upload_file tool for local disk uploads"
 - Modify: `crates/gdrive-mcp/src/models.rs`
 - Modify: `crates/gdrive-mcp/src/server.rs`
 
-- [ ] **Step 1: Define `ExportFileArgs` and update `DownloadFileArgs` in `models.rs`**
+- [x] **Step 1: Define `ExportFileArgs` and update `DownloadFileArgs` in `models.rs`**
 1. Tambahkan `ExportFileArgs`:
 ```rust
 /// Parameter untuk tool gdrive_export_file
@@ -186,16 +186,16 @@ pub struct ExportFileArgs {
 pub export_format: Option<String>,
 ```
 
-- [ ] **Step 2: Implement `gdrive_export_file` and update `gdrive_download_file` in `server.rs`**
+- [x] **Step 2: Implement `gdrive_export_file` and update `gdrive_download_file` in `server.rs`**
 - Petakan format pendek (`pdf`, `docx`, dll.) ke Google Workspace export MIME type.
 - Simpan file ke tujuan atau direktori kerja dengan nama `filename.<ext>`.
 - Kembalikan hasil terstruktur berisi path lokal, ukuran byte, dan format ekspor.
 
-- [ ] **Step 3: Run contract tests**
+- [x] **Step 3: Run contract tests**
 Run: `cargo test -p gdrive-cli --test mcp_stdio_contract`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add crates/gdrive-mcp
 git commit -m "feat(mcp): add gdrive_export_file and multi-format download capabilities"
@@ -209,7 +209,7 @@ git commit -m "feat(mcp): add gdrive_export_file and multi-format download capab
 - Modify: `crates/gdrive-mcp/src/models.rs`
 - Modify: `crates/gdrive-mcp/src/server.rs`
 
-- [ ] **Step 1: Define `ListTreeArgs` and `GetFilePathArgs` in `models.rs`**
+- [x] **Step 1: Define `ListTreeArgs` and `GetFilePathArgs` in `models.rs`**
 ```rust
 /// Parameter untuk tool gdrive_list_tree
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -232,15 +232,15 @@ pub struct GetFilePathArgs {
 }
 ```
 
-- [ ] **Step 2: Implement handlers in `server.rs`**
+- [x] **Step 2: Implement handlers in `server.rs`**
 - `gdrive_list_tree`: Mengembalikan pohon JSON rekursif dari folder dan file di dalamnya hingga `max_depth`.
 - `gdrive_get_file_path`: Mengembalikan string `path` (`/My Drive/Work/Report.docx`) dan array `breadcrumbs` `[{"id": "...", "name": "..."}]`.
 
-- [ ] **Step 3: Run contract tests**
+- [x] **Step 3: Run contract tests**
 Run: `cargo test -p gdrive-cli --test mcp_stdio_contract`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add crates/gdrive-mcp
 git commit -m "feat(mcp): add gdrive_list_tree and gdrive_get_file_path tools"
@@ -254,7 +254,7 @@ git commit -m "feat(mcp): add gdrive_list_tree and gdrive_get_file_path tools"
 - Modify: `crates/gdrive-mcp/src/models.rs`
 - Modify: `crates/gdrive-mcp/src/server.rs`
 
-- [ ] **Step 1: Define `StarFileArgs` and update `SearchFilesArgs` in `models.rs`**
+- [x] **Step 1: Define `StarFileArgs` and update `SearchFilesArgs` in `models.rs`**
 1. Tambahkan `StarFileArgs`:
 ```rust
 /// Parameter untuk tool gdrive_star_file
@@ -276,15 +276,15 @@ pub file_type: Option<String>,
 pub starred_only: Option<bool>,
 ```
 
-- [ ] **Step 2: Implement handlers in `server.rs`**
+- [x] **Step 2: Implement handlers in `server.rs`**
 - Pasang handler `gdrive_star_file`.
 - Sambungkan opsi `file_type` dan `starred_only` di handler `gdrive_search`.
 
-- [ ] **Step 3: Run contract tests**
+- [x] **Step 3: Run contract tests**
 Run: `cargo test -p gdrive-cli --test mcp_stdio_contract`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add crates/gdrive-mcp
 git commit -m "feat(mcp): add gdrive_star_file and smart search filters"
@@ -298,7 +298,7 @@ git commit -m "feat(mcp): add gdrive_star_file and smart search filters"
 - Modify: `crates/gdrive-mcp/src/models.rs`
 - Modify: `crates/gdrive-mcp/src/server.rs`
 
-- [ ] **Step 1: Define `BatchOpsArgs` and `BatchActionItem` in `models.rs`**
+- [x] **Step 1: Define `BatchOpsArgs` and `BatchActionItem` in `models.rs`**
 ```rust
 /// Satu item tindakan dalam operasi batch
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -325,14 +325,14 @@ pub struct BatchOpsArgs {
 }
 ```
 
-- [ ] **Step 2: Implement `gdrive_batch_ops` in `server.rs`**
+- [x] **Step 2: Implement `gdrive_batch_ops` in `server.rs`**
 Jalankan setiap operasi secara terisolasi, tangani error per-item, dan kembalikan ringkasan `total_operations`, `succeeded`, `failed`, dan daftar hasil detail.
 
-- [ ] **Step 3: Run contract tests**
+- [x] **Step 3: Run contract tests**
 Run: `cargo test -p gdrive-cli --test mcp_stdio_contract`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add crates/gdrive-mcp
 git commit -m "feat(mcp): add gdrive_batch_ops tool for multi-action execution"
@@ -347,7 +347,7 @@ git commit -m "feat(mcp): add gdrive_batch_ops tool for multi-action execution"
 - Modify: `crates/gdrive-cli/src/main.rs` (pastikan CLI juga punya parity `tree` dan `star` jika relevan)
 - Test: `crates/gdrive-cli/tests/cli_e2e.rs`
 
-- [ ] **Step 1: Update instructions in `server.rs`**
+- [x] **Step 1: Update instructions in `server.rs`**
 Kelompokkan panduan tools menjadi kategori yang jelas untuk AI Agent:
 - *Discovery & Navigation*: `gdrive_search`, `gdrive_list_folder`, `gdrive_list_tree`, `gdrive_get_file_path`, `gdrive_list_drives`.
 - *Reading & Writing*: `gdrive_read_file`, `gdrive_create_file`, `gdrive_update_file`, `gdrive_upload_file`, `gdrive_export_file`, `gdrive_download_file`.
@@ -356,10 +356,10 @@ Kelompokkan panduan tools menjadi kategori yang jelas untuk AI Agent:
 - *Revisions & History*: `gdrive_list_revisions`, `gdrive_get_revision`.
 - *Diagnostics & Management*: `gdrive_list_profiles`, `gdrive_switch_profile`, `gdrive_get_about`, `gdrive_doctor`, `gdrive_check_update`, `gdrive_self_update`.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 ```bash
 git add crates/gdrive-mcp crates/gdrive-cli
-git commit -m "docs(mcp): update system instructions for comprehensive 35+ tools suite"
+git commit -m "docs(mcp): update system instructions for comprehensive 37 tools suite"
 ```
 
 ---
@@ -370,11 +370,11 @@ git commit -m "docs(mcp): update system instructions for comprehensive 35+ tools
 - Test suite: `./scripts/smoke_test.sh`
 - Binary: `cargo build --release` -> install ke `~/.local/bin/gdrive`
 
-- [ ] **Step 1: Run full pre-PR verification script**
+- [x] **Step 1: Run full pre-PR verification script**
 Run: `./scripts/smoke_test.sh`
 Expected: Format check, clippy, unit tests, CLI tests, MCP contract tests, TUI render tests, security guards all PASS.
 
-- [ ] **Step 2: Build release binary & deploy locally**
+- [x] **Step 2: Build release binary & deploy locally**
 Run:
 ```bash
 cargo build --release
@@ -382,7 +382,7 @@ cp target/release/gdrive ~/.local/bin/gdrive
 ```
 Pastikan `~/.local/bin/gdrive --version` dan `~/.local/bin/gdrive doctor` berjalan sukses.
 
-- [ ] **Step 3: Verification commit**
+- [x] **Step 3: Verification commit**
 ```bash
 git commit --allow-empty -m "chore: complete pre-PR smoke tests and release installation"
 ```

@@ -62,7 +62,10 @@ async fn resolve_mcp_target(
     client: &GDriveClient,
     raw_target: &str,
 ) -> std::result::Result<String, ErrorData> {
-    let target = GDriveClient::clean_file_id(raw_target);
+    let target = GDriveClient::clean_file_id(raw_target).trim();
+    if target.eq_ignore_ascii_case("root") || target.eq_ignore_ascii_case("my drive") {
+        return Ok("root".to_string());
+    }
     if target.len() >= 25 && !target.contains(' ') && !target.contains('.') {
         if let Ok(meta) = client.get_file_metadata(target).await {
             return Ok(meta.id);
@@ -679,16 +682,13 @@ impl GDriveMcpServer {
         // Resolusi target ke File ID
         let file_id = resolve_mcp_target(&client, target).await?;
 
-        let stream_data = client
-            .download_file_stream(&file_id)
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
-        let orig_name = stream_data.name.clone();
-        let mime_type = stream_data.mime_type.clone();
-
         if let Some(export_fmt) = &args.export_format {
-            let (target_mime, ext) = map_export_format(export_fmt, &mime_type)?;
+            let meta = client
+                .get_file_metadata(&file_id)
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+            let (target_mime, ext) = map_export_format(export_fmt, &meta.mime_type)?;
             let (exported_name, bytes) = client
                 .export_file_bytes(&file_id, target_mime)
                 .await
@@ -751,6 +751,14 @@ impl GDriveMcpServer {
                 }),
             }));
         }
+
+        let stream_data = client
+            .download_file_stream(&file_id)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let orig_name = stream_data.name.clone();
+        let mime_type = stream_data.mime_type.clone();
         let clean_name = orig_name.replace('\\', "/");
         let sanitized_name = std::path::Path::new(&clean_name)
             .file_name()

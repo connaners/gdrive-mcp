@@ -258,13 +258,13 @@ impl GDriveClient {
                 "folder" | "folders" | "dir" | "directory" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.folder'".to_string())
                 }
-                "doc" | "docs" | "document" => {
+                "doc" | "docs" | "document" | "documents" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.document'".to_string())
                 }
-                "sheet" | "sheets" | "spreadsheet" => {
+                "sheet" | "sheets" | "spreadsheet" | "spreadsheets" => {
                     q_parts.push("mimeType = 'application/vnd.google-apps.spreadsheet'".to_string())
                 }
-                "slide" | "slides" | "presentation" => q_parts
+                "slide" | "slides" | "presentation" | "presentations" => q_parts
                     .push("mimeType = 'application/vnd.google-apps.presentation'".to_string()),
                 "pdf" => q_parts.push("mimeType = 'application/pdf'".to_string()),
                 "image" | "images" | "photo" | "photos" => {
@@ -1026,8 +1026,11 @@ impl GDriveClient {
         let file_id = Self::clean_file_id(raw_id);
         let meta = self.get_file_metadata(file_id).await?;
 
-        // Verifikasi bahwa file adalah Google Workspace document
-        if !meta.mime_type.starts_with("application/vnd.google-apps.") {
+        // Verifikasi bahwa file adalah Google Workspace document (bukan folder atau shortcut)
+        if meta.mime_type == "application/vnd.google-apps.folder"
+            || meta.mime_type == "application/vnd.google-apps.shortcut"
+            || !meta.mime_type.starts_with("application/vnd.google-apps.")
+        {
             bail!(
                 "File '{}' ({}) bukan dokumen Google Workspace sehingga tidak dapat diekspor. Gunakan download biasa.",
                 meta.name,
@@ -1120,7 +1123,7 @@ impl GDriveClient {
 
         while let Some(parent_id) = current_parents.first() {
             hops += 1;
-            if hops > 10 || parent_id == "root" {
+            if parent_id == "root" || breadcrumbs.iter().any(|b| &b.id == parent_id) || hops > 50 {
                 if parent_id == "root" {
                     breadcrumbs.push(DriveBreadcrumb {
                         id: "root".to_string(),
@@ -1238,8 +1241,12 @@ impl GDriveClient {
                 };
 
                 if is_folder && current_depth < max_depth {
-                    self.populate_tree_children(&mut child_node, current_depth + 1, max_depth)
-                        .await?;
+                    if let Err(e) = self
+                        .populate_tree_children(&mut child_node, current_depth + 1, max_depth)
+                        .await
+                    {
+                        tracing::warn!("Gagal membaca subfolder {}: {}", child_node.id, e);
+                    }
                 }
 
                 node.children.push(child_node);
