@@ -176,6 +176,32 @@ fn map_export_format(
     }
 }
 
+fn expand_local_path(raw: &str) -> std::path::PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("~/") || trimmed == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(trimmed.strip_prefix("~/").unwrap_or(""));
+        }
+    }
+    let pb = std::path::PathBuf::from(trimmed);
+    if pb.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&pb))
+            .unwrap_or(pb)
+    } else {
+        pb
+    }
+}
+
+fn ensure_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct GDriveMcpServer {
     tool_router: ToolRouter<Self>,
@@ -382,11 +408,16 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<ListFolderArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let target_folder = match args.folder_id.as_deref() {
+            Some(f) if !f.trim().is_empty() && !f.trim().eq_ignore_ascii_case("root") => {
+                Some(resolve_mcp_target(&client, f.trim()).await?)
+            }
+            _ => None,
+        };
         let files = client
-            .search_files(None, args.folder_id.as_deref(), args.page_size)
+            .search_files(None, target_folder.as_deref(), args.page_size)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(files).unwrap_or(Value::Null),
         }))
@@ -401,11 +432,16 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<ListTreeArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
-        let root_id = args.folder_id.as_deref().unwrap_or("root");
+        let root_id = match args.folder_id.as_deref() {
+            Some(f) if !f.trim().is_empty() && !f.trim().eq_ignore_ascii_case("root") => {
+                resolve_mcp_target(&client, f.trim()).await?
+            }
+            _ => "root".to_string(),
+        };
         let max_depth = args.max_depth.unwrap_or(2);
 
         let tree = client
-            .get_folder_tree(root_id, max_depth)
+            .get_folder_tree(&root_id, max_depth)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
 
@@ -468,15 +504,7 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<UploadFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
-        let raw_path = args.local_path.trim();
-        let path_buf = std::path::PathBuf::from(raw_path);
-        let local_path = if path_buf.is_relative() {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(&path_buf))
-                .unwrap_or(path_buf)
-        } else {
-            path_buf
-        };
+        let local_path = expand_local_path(&args.local_path);
 
         if !local_path.exists() {
             return Err(ErrorData::invalid_params(
@@ -492,11 +520,18 @@ impl GDriveMcpServer {
             ));
         }
 
+        let resolved_parent = match args.parent_folder_id.as_deref() {
+            Some(p) if !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("root") => {
+                Some(resolve_mcp_target(&client, p.trim()).await?)
+            }
+            _ => None,
+        };
+
         let uploaded = client
             .upload_file_path(
                 &local_path,
                 args.name.as_deref(),
-                args.parent_folder_id.as_deref(),
+                resolved_parent.as_deref(),
                 args.as_google_doc.unwrap_or(false),
             )
             .await
@@ -558,11 +593,11 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<TrashFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let trashed = client
-            .trash_file(&args.file_id)
+            .trash_file(&file_id)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(trashed).unwrap_or(Value::Null),
         }))
@@ -577,11 +612,11 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<RenameFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
         let renamed = client
-            .rename_file(&args.file_id, &args.new_name)
+            .rename_file(&file_id, &args.new_name)
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(renamed).unwrap_or(Value::Null),
         }))
@@ -596,15 +631,16 @@ impl GDriveMcpServer {
         Parameters(args): Parameters<MoveFileArgs>,
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+        let new_parent_id = if args.new_parent_id.trim().eq_ignore_ascii_case("root") {
+            "root".to_string()
+        } else {
+            resolve_mcp_target(&client, &args.new_parent_id).await?
+        };
         let moved = client
-            .move_file(
-                &args.file_id,
-                &args.new_parent_id,
-                args.old_parent_id.as_deref(),
-            )
+            .move_file(&file_id, &new_parent_id, args.old_parent_id.as_deref())
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-
         Ok(Json(ToolResponse {
             result: serde_json::to_value(moved).unwrap_or(Value::Null),
         }))
@@ -665,8 +701,8 @@ impl GDriveMcpServer {
             let target_filename = format!("{}.{}", stem, ext);
 
             let final_path = match args.destination_path {
-                Some(p) => {
-                    let pb = std::path::PathBuf::from(p);
+                Some(ref p) => {
+                    let pb = expand_local_path(p);
                     if pb.is_dir() {
                         pb.join(&target_filename)
                     } else {
@@ -677,6 +713,10 @@ impl GDriveMcpServer {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
                     .join(&target_filename),
             };
+
+            ensure_parent_dir(&final_path).map_err(|e| {
+                ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+            })?;
 
             if let Ok(meta) = std::fs::symlink_metadata(&final_path) {
                 if meta.file_type().is_symlink() {
@@ -720,8 +760,8 @@ impl GDriveMcpServer {
             .unwrap_or("downloaded_file");
 
         let out_path = match args.destination_path {
-            Some(p) => {
-                let pb = std::path::PathBuf::from(p);
+            Some(ref p) => {
+                let pb = expand_local_path(p);
                 if pb.is_dir() {
                     pb.join(sanitized_name)
                 } else {
@@ -732,6 +772,10 @@ impl GDriveMcpServer {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
                 .join(sanitized_name),
         };
+
+        ensure_parent_dir(&out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+        })?;
 
         if let Ok(meta) = std::fs::symlink_metadata(&out_path) {
             if meta.file_type().is_symlink() {
@@ -829,8 +873,8 @@ impl GDriveMcpServer {
         let target_filename = format!("{}.{}", stem, ext);
 
         let out_path = match args.destination_path {
-            Some(p) => {
-                let pb = std::path::PathBuf::from(p);
+            Some(ref p) => {
+                let pb = expand_local_path(p);
                 if pb.is_dir() {
                     pb.join(&target_filename)
                 } else {
@@ -841,6 +885,10 @@ impl GDriveMcpServer {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
                 .join(&target_filename),
         };
+
+        ensure_parent_dir(&out_path).map_err(|e| {
+            ErrorData::internal_error(format!("Gagal membuat folder tujuan: {}", e), None)
+        })?;
 
         if let Ok(m) = std::fs::symlink_metadata(&out_path) {
             if m.file_type().is_symlink() {
@@ -973,17 +1021,23 @@ impl GDriveMcpServer {
                             continue;
                         }
                     };
-                    let dest_id = match resolve_mcp_target(&client, dest).await {
-                        Ok(id) => id,
-                        Err(e) => {
-                            failed += 1;
-                            results.push(serde_json::json!({
-                                "file_id": file_id,
-                                "action": "move",
-                                "status": "error",
-                                "message": format!("Folder tujuan '{}' tidak ditemukan: {}", dest, e.message)
-                            }));
-                            continue;
+                    let dest_id = if dest.eq_ignore_ascii_case("root")
+                        || dest.eq_ignore_ascii_case("my drive")
+                    {
+                        "root".to_string()
+                    } else {
+                        match resolve_mcp_target(&client, dest).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                failed += 1;
+                                results.push(serde_json::json!({
+                                    "file_id": file_id,
+                                    "action": "move",
+                                    "status": "error",
+                                    "message": format!("Folder tujuan '{}' tidak ditemukan: {}", dest, e.message)
+                                }));
+                                continue;
+                            }
                         }
                     };
                     match client.move_file(&file_id, &dest_id, None).await {
@@ -1049,17 +1103,22 @@ impl GDriveMcpServer {
                 },
                 "copy" => {
                     let dest_id = if let Some(d) = &op.target_folder {
-                        match resolve_mcp_target(&client, d.trim()).await {
-                            Ok(id) => Some(id),
-                            Err(e) => {
-                                failed += 1;
-                                results.push(serde_json::json!({
-                                    "file_id": file_id,
-                                    "action": "copy",
-                                    "status": "error",
-                                    "message": format!("Folder tujuan copy '{}' tidak valid: {}", d, e.message)
-                                }));
-                                continue;
+                        let dt = d.trim();
+                        if dt.eq_ignore_ascii_case("root") || dt.eq_ignore_ascii_case("my drive") {
+                            Some("root".to_string())
+                        } else {
+                            match resolve_mcp_target(&client, dt).await {
+                                Ok(id) => Some(id),
+                                Err(e) => {
+                                    failed += 1;
+                                    results.push(serde_json::json!({
+                                        "file_id": file_id,
+                                        "action": "copy",
+                                        "status": "error",
+                                        "message": format!("Folder tujuan copy '{}' tidak valid: {}", d, e.message)
+                                    }));
+                                    continue;
+                                }
                             }
                         }
                     } else {
