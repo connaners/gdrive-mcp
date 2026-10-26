@@ -1731,6 +1731,32 @@ mod tests {
     }
 
     #[test]
+    fn test_search_file_type_and_starred_flags() {
+        let cli = Cli::try_parse_from([
+            "gdrive",
+            "search",
+            "report",
+            "--file-type",
+            "pdf",
+            "--starred",
+        ])
+        .unwrap();
+        match cli.command.unwrap() {
+            Commands::Search {
+                query,
+                file_type,
+                starred,
+                ..
+            } => {
+                assert_eq!(query, vec!["report"]);
+                assert_eq!(file_type.as_deref(), Some("pdf"));
+                assert!(starred);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
     fn test_info_command_parsing() {
         let cli = Cli::try_parse_from(["gdrive", "info", "file_123", "--json"]).unwrap();
         match cli.command.unwrap() {
