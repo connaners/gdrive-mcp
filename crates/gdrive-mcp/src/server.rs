@@ -20,7 +20,7 @@ use crate::models::{
     ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs, ListTrashArgs, MoveFileArgs,
     ReadFileArgs, RenameFileArgs, ResolveCommentArgs, RestoreFileArgs, RunDoctorArgs,
     SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, SwitchProfileArgs, TrashFileArgs,
-    UpdateFileArgs,
+    UpdateFileArgs, UploadFileArgs,
 };
 
 fn any_json_object(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -342,6 +342,54 @@ impl GDriveMcpServer {
 
         Ok(Json(ToolResponse {
             result: serde_json::to_value(created).unwrap_or(Value::Null),
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_upload_file",
+        description = "Mengunggah file dari disk lokal ke Google Drive dengan deteksi MIME otomatis dan opsi konversi ke native Google Docs."
+    )]
+    pub async fn gdrive_upload_file(
+        &self,
+        Parameters(args): Parameters<UploadFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let raw_path = args.local_path.trim();
+        let path_buf = std::path::PathBuf::from(raw_path);
+        let local_path = if path_buf.is_relative() {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&path_buf))
+                .unwrap_or(path_buf)
+        } else {
+            path_buf
+        };
+
+        if !local_path.exists() {
+            return Err(ErrorData::invalid_params(
+                format!("File lokal '{:?}' tidak ditemukan di disk.", local_path),
+                None,
+            ));
+        }
+
+        if !local_path.is_file() {
+            return Err(ErrorData::invalid_params(
+                format!("Path '{:?}' adalah direktori, bukan file.", local_path),
+                None,
+            ));
+        }
+
+        let uploaded = client
+            .upload_file_path(
+                &local_path,
+                args.name.as_deref(),
+                args.parent_folder_id.as_deref(),
+                args.as_google_doc.unwrap_or(false),
+            )
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(uploaded).unwrap_or(Value::Null),
         }))
     }
 

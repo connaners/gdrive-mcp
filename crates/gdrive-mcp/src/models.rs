@@ -66,6 +66,20 @@ pub struct ReadFileArgs {
     pub profile: Option<String>,
 }
 
+/// Parameter untuk tool gdrive_upload_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UploadFileArgs {
+    /// Path ke file lokal di disk yang ingin diunggah ke Google Drive (bisa absolut atau relatif).
+    pub local_path: String,
+    /// Nama file yang akan disimpan di Google Drive (opsional, jika tidak diisi menggunakan nama asli file lokal).
+    pub name: Option<String>,
+    /// ID folder tujuan di Google Drive (opsional, jika tidak diisi disimpan di root Drive).
+    pub parent_folder_id: Option<String>,
+    /// Jika true, otomatis mengonversi file teks/markdown menjadi native Google Docs yang dapat diedit di web.
+    pub as_google_doc: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFolderArgs {
     /// ID folder yang ingin dilihat isinya (opsional, kosongkan untuk root Drive).
