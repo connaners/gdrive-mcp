@@ -19,7 +19,7 @@ use crate::models::{
     GetFileInfoArgs, GetFilePathArgs, GetRevisionArgs, GetShareableLinkArgs, ListCommentsArgs,
     ListDrivesArgs, ListFolderArgs, ListPermissionsArgs, ListProfilesArgs, ListRevisionsArgs,
     ListTrashArgs, ListTreeArgs, MoveFileArgs, ReadFileArgs, RenameFileArgs, ResolveCommentArgs,
-    RestoreFileArgs, RunDoctorArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs,
+    RestoreFileArgs, RunDoctorArgs, SearchFilesArgs, SelfUpdateArgs, ShareFileArgs, StarFileArgs,
     SwitchProfileArgs, TrashFileArgs, UpdateFileArgs, UploadFileArgs,
 };
 
@@ -333,7 +333,8 @@ impl GDriveMcpServer {
                 page_token: args.page_token,
                 full_text: args.full_text.unwrap_or(false),
                 order_by: args.order_by,
-                ..Default::default()
+                file_type: args.file_type,
+                starred_only: args.starred_only,
             })
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -889,6 +890,27 @@ impl GDriveMcpServer {
         Ok(Json(ToolResponse {
             result: serde_json::to_value(copied)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
+        }))
+    }
+
+    #[tool(
+        name = "gdrive_star_file",
+        description = "Menandai (star/favorite) atau mencabut bintang pada file atau folder di Google Drive."
+    )]
+    pub async fn gdrive_star_file(
+        &self,
+        Parameters(args): Parameters<StarFileArgs>,
+    ) -> Result<Json<ToolResponse>, ErrorData> {
+        let client = Self::client_for_profile(args.profile.as_deref()).await?;
+        let file_id = resolve_mcp_target(&client, &args.file_id).await?;
+
+        let updated = client
+            .star_file(&file_id, args.starred)
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        Ok(Json(ToolResponse {
+            result: serde_json::to_value(updated).unwrap_or(Value::Null),
         }))
     }
 

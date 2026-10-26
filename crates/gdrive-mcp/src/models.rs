@@ -32,6 +32,21 @@ pub struct SearchFilesArgs {
     pub full_text: Option<bool>,
     /// Pengurutan hasil pencarian (contoh: 'modifiedTime desc', 'name', 'folder,name').
     pub order_by: Option<String>,
+    /// Filter jenis file: 'folder', 'doc', 'sheet', 'slide', 'pdf', 'image', 'video', atau 'archive' (opsional).
+    pub file_type: Option<String>,
+    /// Jika true, hanya tampilkan file yang dibintangi/difavoritkan (opsional).
+    pub starred_only: Option<bool>,
+    /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
+    pub profile: Option<String>,
+}
+
+/// Parameter untuk tool gdrive_star_file
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StarFileArgs {
+    /// ID file atau folder di Google Drive yang ingin ditandai atau dicabut bintangnya.
+    pub file_id: String,
+    /// True untuk menambahkan bintang (star/favorite), false untuk mencabut bintang (unstar).
+    pub starred: bool,
     /// Nama profile akun Google Drive yang digunakan untuk operasi ini (opsional, jika tidak diisi menggunakan profile aktif).
     pub profile: Option<String>,
 }
