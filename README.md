@@ -29,7 +29,8 @@ gdrive-mcp/
 ├── Cargo.toml                  # Workspace manifest
 ├── crates/
 │   ├── gdrive-core/            # Pure Drive v3 REST API client, OAuth2 & token lifecycle
-│   ├── gdrive-mcp/             # MCP server implementation using `rmcp` (8 tools)
+│   ├── gdrive-mcp/             # MCP server implementation using `rmcp` (37 tools)
+│   ├── gdrive-tui/             # Interactive Terminal User Interface (Ratatui)
 │   └── gdrive-cli/             # Main executable binary (`gdrive`)
 ```
 
@@ -151,6 +152,10 @@ Commands:
 gdrive search iboss v2 --limit 10 -s "modifiedTime desc"
 gdrive search "Roadmap Q3" --limit 10
 
+# Search with smart file type filters and starred favorites
+gdrive search "Quarterly Plan" --file-type doc --starred
+gdrive search --file-type pdf --limit 5
+
 # Inspect detailed metadata of a file or folder
 gdrive info 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms
 gdrive info 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms --json
@@ -235,34 +240,69 @@ gdrive --profile personal search "Invoice"
 
 ## 🤖 MCP Server Tools (Model Context Protocol)
 
-When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes 25 schema-safe tools to LLMs:
+When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes **37 schema-safe tools** to LLMs:
+
+### 🔍 Discovery & Navigation
 | Tool Name | Description | Key Arguments |
 |:---|:---|:---|
-| `gdrive_search` | Search files & folders (supports full-text, ordering & pagination) | `query` (string), `folder_id` (string), `page_size` (u32), `page_token` (string), `full_text` (bool), `order_by` (string) |
-| `gdrive_read_file` | Read file (Docs to md, Sheets to CSV, Slides to text) | `file_id` (string) |
-| `gdrive_get_file_info` | Inspect file/folder metadata without downloading full content | `file_id` (string) |
-| `gdrive_list_folder` | List contents of a folder | `folder_id` (string), `page_size` (u32) |
-| `gdrive_create_file` | Create a new file or native Google Doc | `name` (string), `content` (string), `parent_folder_id` (string), `as_google_doc` (bool) |
-| `gdrive_update_file` | Update or append text to an existing file | `file_id` (string), `content` (string), `append` (bool) |
-| `gdrive_copy_file` | Duplicate a file with optional new name or destination folder | `file_id` (string), `new_name` (string), `parent_folder_id` (string) |
-| `gdrive_download_file` | Download a file to local disk by ID or name | `file_id_or_name` (string), `destination_path` (string) |
-| `gdrive_rename_file` | Rename a file or folder | `file_id` (string), `new_name` (string) |
-| `gdrive_move_file` | Move a file or folder to a target folder | `file_id` (string), `new_parent_id` (string), `old_parent_id` (string) |
-| `gdrive_create_folder`| Create a folder in personal or Shared Drives | `name` (string), `parent_folder_id` (string) |
-| `gdrive_trash_file` | Safely move a file or folder to the trash | `file_id` (string) |
-| `gdrive_list_drives` | List accessible enterprise Shared Drives | `page_size` (u32) |
-| `gdrive_list_permissions` | View who has access to a file or folder | `file_id` (string) |
-| `gdrive_share_file` | Share a file or folder with users, groups, domains, or anyone with link | `file_id` (string), `role` (string), `permission_type` (string), `email_address` (string), `send_notification` (bool) |
-| `gdrive_delete_permission` | Revoke a permission from a file or folder | `file_id` (string), `permission_id` (string) |
-| `gdrive_get_shareable_link` | Get shareable web link with optional automatic public access | `file_id` (string), `make_public` (bool) |
-| `gdrive_list_comments` | View comments and discussions on a document | `file_id` (string), `page_size` (u32) |
-| `gdrive_add_comment` | Add feedback or review comments to a file | `file_id` (string), `content` (string) |
-| `gdrive_resolve_comment` | Mark a comment as resolved | `file_id` (string), `comment_id` (string) |
-| `gdrive_list_trash` | List files and folders currently in the trash bin | `page_size` (u32), `page_token` (string) |
-| `gdrive_restore_file` | Restore a file or folder from trash (untrash) | `file_id` (string) |
-| `gdrive_empty_trash` | Permanently empty all items in trash (requires confirmation) | `confirm` (bool) |
-| `gdrive_list_revisions` | View previous versions and revision history of a file | `file_id` (string) |
-| `gdrive_get_revision` | Retrieve content or metadata of a past revision | `file_id` (string), `revision_id` (string) |
+| `gdrive_search` | Search files & folders (supports full-text, ordering, pagination, `file_type`, and `starred_only`) | `query`, `folder_id`, `limit`, `full_text`, `order_by`, `file_type`, `starred_only` |
+| `gdrive_list_folder` | List contents of a folder (accepts folder ID or folder name) | `folder_id`, `page_size` |
+| `gdrive_list_tree` | Explore recursive folder tree hierarchy up to `max_depth` (1–4) in one call | `folder_id`, `max_depth` |
+| `gdrive_get_file_path` | Get human-readable breadcrumb path from Drive root to file | `file_id` |
+| `gdrive_list_drives` | List accessible enterprise Shared Drives (Team Drives) | `page_size` |
+
+### 📄 File Reading, Creation & Transfer
+| Tool Name | Description | Key Arguments |
+|:---|:---|:---|
+| `gdrive_read_file` | Read file (Docs to md, Sheets to CSV, Slides to text) | `file_id` |
+| `gdrive_create_file` | Create a new file or native Google Doc from text content | `name`, `content`, `parent_folder_id`, `as_google_doc` |
+| `gdrive_upload_file` | Upload any local file from disk (PDF, image, script, zip) to Drive | `local_path`, `name`, `parent_folder_id`, `as_google_doc` |
+| `gdrive_export_file` | Export Google Docs/Sheets/Slides to standard formats (PDF, DOCX, XLSX, CSV, TXT, HTML) | `file_id`, `format`, `destination_path` |
+| `gdrive_download_file` | Download file to local disk (supports `export_format` for Workspace docs) | `file_id_or_name`, `destination_path`, `export_format` |
+| `gdrive_update_file` | Update or append text to an existing file | `file_id`, `content`, `append` |
+
+### 🗂️ File Management & Organization
+| Tool Name | Description | Key Arguments |
+|:---|:---|:---|
+| `gdrive_get_file_info` | Inspect file/folder metadata without downloading full content | `file_id` |
+| `gdrive_copy_file` | Duplicate a file with optional new name or destination folder | `file_id`, `new_name`, `parent_folder_id` |
+| `gdrive_rename_file` | Rename a file or folder (accepts ID or name) | `file_id`, `new_name` |
+| `gdrive_move_file` | Move a file or folder to a target folder (accepts IDs or names, including 'root') | `file_id`, `new_parent_id`, `old_parent_id` |
+| `gdrive_star_file` | Star (favorite) or unstar a file or folder | `file_id`, `starred` |
+| `gdrive_batch_ops` | Execute multiple file actions (`move`, `trash`, `restore`, `copy`, `star`) in one batch call | `operations` (array of actions) |
+| `gdrive_create_folder`| Create a folder in personal or Shared Drives | `name`, `parent_folder_id` |
+| `gdrive_trash_file` | Safely move a file or folder to the trash | `file_id` |
+| `gdrive_list_trash` | List files and folders currently in the trash bin | `page_size`, `page_token` |
+| `gdrive_restore_file` | Restore a file or folder from trash (untrash) | `file_id` |
+| `gdrive_empty_trash` | Permanently empty all items in trash (requires `confirm: true`) | `confirm` |
+
+### 🤝 Collaboration & Sharing
+| Tool Name | Description | Key Arguments |
+|:---|:---|:---|
+| `gdrive_list_permissions` | View who has access to a file or folder | `file_id` |
+| `gdrive_share_file` | Share a file or folder with users, groups, domains, or anyone with link | `file_id`, `role`, `permission_type`, `email_address`, `send_notification` |
+| `gdrive_delete_permission` | Revoke a permission from a file or folder | `file_id`, `permission_id` |
+| `gdrive_get_shareable_link` | Get shareable web link with optional automatic public access | `file_id`, `make_public` |
+| `gdrive_list_comments` | View comments and discussions on a document | `file_id`, `page_size` |
+| `gdrive_add_comment` | Add feedback or review comments to a file | `file_id`, `content` |
+| `gdrive_resolve_comment` | Mark a comment as resolved | `file_id`, `comment_id` |
+
+### 🕰️ Revisions & History
+| Tool Name | Description | Key Arguments |
+|:---|:---|:---|
+| `gdrive_list_revisions` | View previous versions and revision history of a file | `file_id` |
+| `gdrive_get_revision` | Retrieve content or metadata of a past revision | `file_id`, `revision_id` |
+
+### ⚙️ Multi-Profile, Quota & Diagnostics
+| Tool Name | Description | Key Arguments |
+|:---|:---|:---|
+| `gdrive_list_profiles` | List configured Google Drive accounts, active status & token validity | *(none)* |
+| `gdrive_switch_profile` | Switch default active profile to another account | `name` |
+| `gdrive_get_about` | Check storage quota limits, usage & user account info | `profile` |
+| `gdrive_doctor` | Run comprehensive health checks on credentials, token & API | `profile` |
+| `gdrive_check_update` | Check for new releases and changelog on GitHub | `include_changelog` |
+| `gdrive_self_update` | Automatically update binary to latest release | `restart` |
+
 ---
 
 ## 🔌 Agent Configurations
