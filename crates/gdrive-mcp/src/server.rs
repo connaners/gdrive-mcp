@@ -63,6 +63,12 @@ async fn resolve_mcp_target(
     raw_target: &str,
 ) -> std::result::Result<String, ErrorData> {
     let target = GDriveClient::clean_file_id(raw_target).trim();
+    if target.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "ID atau nama target tidak boleh kosong.",
+            None,
+        ));
+    }
     if target.eq_ignore_ascii_case("root") || target.eq_ignore_ascii_case("my drive") {
         return Ok("root".to_string());
     }
@@ -266,6 +272,8 @@ impl ServerHandler for GDriveMcpServer {
             Use gdrive_trash_file to safely move files or folders to trash. \
             Use gdrive_list_drives to list accessible Shared Drives. \
             Use gdrive_download_file to download a file from Google Drive to local disk by file ID or name, with optional export_format for Workspace docs. \
+            Use gdrive_list_permissions to view who has access to a file or folder. \
+            Use gdrive_share_file to share a file or folder with users, groups, domains, or anyone with link. \
             Use gdrive_delete_permission to revoke access for a specific permission ID. \
             Use gdrive_get_shareable_link to get the web view link with optional automatic public sharing. \
             Use gdrive_list_comments to view comments and discussions on a document. \
@@ -412,9 +420,7 @@ impl GDriveMcpServer {
     ) -> Result<Json<ToolResponse>, ErrorData> {
         let client = Self::client_for_profile(args.profile.as_deref()).await?;
         let target_folder = match args.folder_id.as_deref() {
-            Some(f) if !f.trim().is_empty() && !f.trim().eq_ignore_ascii_case("root") => {
-                Some(resolve_mcp_target(&client, f.trim()).await?)
-            }
+            Some(f) if !f.trim().is_empty() => Some(resolve_mcp_target(&client, f.trim()).await?),
             _ => None,
         };
         let files = client
@@ -524,9 +530,7 @@ impl GDriveMcpServer {
         }
 
         let resolved_parent = match args.parent_folder_id.as_deref() {
-            Some(p) if !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("root") => {
-                Some(resolve_mcp_target(&client, p.trim()).await?)
-            }
+            Some(p) if !p.trim().is_empty() => Some(resolve_mcp_target(&client, p.trim()).await?),
             _ => None,
         };
 
@@ -1692,5 +1696,19 @@ mod tests {
         let p_tilde = expand_local_path("~/test.txt");
         assert!(p_tilde.is_absolute());
         assert!(!p_tilde.to_string_lossy().contains('~'));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_mcp_target_empty_string_rejected() {
+        if let Ok(c) = GDriveClient::from_profile(Some("default")).await {
+            let res = resolve_mcp_target(&c, "   ").await;
+            assert!(res.is_err());
+            assert_eq!(
+                res.unwrap_err().code,
+                rmcp::model::ErrorCode::INVALID_PARAMS
+            );
+            let res_root = resolve_mcp_target(&c, "My Drive").await;
+            assert_eq!(res_root.unwrap(), "root");
+        }
     }
 }

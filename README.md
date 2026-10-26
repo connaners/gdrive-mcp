@@ -303,7 +303,7 @@ When running as an MCP server (`gdrive mcp serve`), `gdrive-mcp` exposes **37 sc
 ### 🔍 Discovery & Navigation
 | Tool Name | Description | Key Arguments |
 |:---|:---|:---|
-| `gdrive_search` | Search files & folders (supports full-text, ordering, pagination, `file_type`, and `starred_only`) | `query`, `folder_id`, `page_size`, `full_text`, `order_by`, `file_type`, `starred_only` |
+| `gdrive_search` | Search files & folders (supports full-text, ordering, pagination, `file_type`, and `starred_only`) | `query`, `folder_id`, `page_size`, `page_token`, `full_text`, `order_by`, `file_type`, `starred_only` |
 | `gdrive_list_folder` | List contents of a folder (accepts folder ID or folder name) | `folder_id`, `page_size` |
 | `gdrive_list_tree` | Explore recursive folder tree hierarchy up to `max_depth` (1–4) in one call | `folder_id`, `max_depth` |
 | `gdrive_get_file_path` | Get human-readable breadcrumb path from Drive root to file | `file_id` |
