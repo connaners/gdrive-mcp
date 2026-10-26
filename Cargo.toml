@@ -23,7 +23,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 comfy-table = "7"
-dirs = "6"
+dirs = "7"
 futures-util = "0.3"
 flate2 = "1.0"
 indicatif = "0.17"
