@@ -29,7 +29,7 @@ flate2 = "1.0"
 indicatif = "0.17"
 open = "5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
-rmcp = { version = "2.1", features = ["macros", "schemars", "server", "transport-io"] }
+rmcp = { version = "3.7", features = ["macros", "schemars", "server", "transport-io"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
