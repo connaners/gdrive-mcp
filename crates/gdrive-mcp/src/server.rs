@@ -186,20 +186,7 @@ fn map_export_format(
 }
 
 fn expand_local_path(raw: &str) -> std::path::PathBuf {
-    let trimmed = raw.trim();
-    if trimmed.starts_with("~/") || trimmed == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(trimmed.strip_prefix("~/").unwrap_or(""));
-        }
-    }
-    let pb = std::path::PathBuf::from(trimmed);
-    if pb.is_relative() {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&pb))
-            .unwrap_or(pb)
-    } else {
-        pb
-    }
+    gdrive_core::clean_local_path(raw)
 }
 
 fn ensure_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
@@ -1696,6 +1683,10 @@ mod tests {
         let p_tilde = expand_local_path("~/test.txt");
         assert!(p_tilde.is_absolute());
         assert!(!p_tilde.to_string_lossy().contains('~'));
+
+        let p_quoted = expand_local_path("\"~/test.txt\" ");
+        assert!(p_quoted.is_absolute());
+        assert_eq!(p_quoted, p_tilde);
     }
 
     #[tokio::test]

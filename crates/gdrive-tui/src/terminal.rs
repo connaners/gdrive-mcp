@@ -1218,7 +1218,32 @@ async fn handle_file_op_keys(state: &mut AppState, key: KeyEvent, tx: &Unbounded
     let mut load_subfolder_id: Option<String> = None;
 
     if let CurrentView::FileOpModal(ref mut op) = state.current_view {
+        if let FileOpState::Upload {
+            ref mut local_path,
+            active_field: 0,
+            ..
+        } = op
+        {
+            if matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter) {
+                local_path.clean_as_path();
+            }
+        }
         handle_file_op_input(op, key, &mut execute_action, &mut load_subfolder_id);
+        if let FileOpState::Upload {
+            ref mut local_path,
+            active_field: 0,
+            ..
+        } = op
+        {
+            let s = local_path.as_str();
+            let t = s.trim();
+            if t.len() >= 2
+                && ((t.starts_with('"') && t.ends_with('"'))
+                    || (t.starts_with('\'') && t.ends_with('\'')))
+            {
+                local_path.clean_as_path();
+            }
+        }
     }
 
     if let Some(target) = load_subfolder_id {
@@ -1236,7 +1261,19 @@ async fn handle_file_op_keys(state: &mut AppState, key: KeyEvent, tx: &Unbounded
         return;
     }
 
-    if let Some(action) = execute_action {
+    if let Some(mut action) = execute_action {
+        match &mut action {
+            FileOpState::Upload { local_path, .. } => {
+                local_path.clean_as_path();
+            }
+            FileOpState::Download { dest_path, .. } => {
+                dest_path.clean_as_path();
+            }
+            FileOpState::BatchDownload { dest_dir, .. } => {
+                dest_dir.clean_as_path();
+            }
+            _ => {}
+        }
         execute_file_op(state, action, tx).await;
     }
 }

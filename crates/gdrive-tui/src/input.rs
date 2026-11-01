@@ -159,8 +159,21 @@ impl InputBuffer {
             format!("{}_", before)
         }
     }
+    /// Strips enclosing quotes, whitespace, and unescapes shell-escaped characters
+    pub fn clean_as_path(&mut self) -> bool {
+        let current = self.as_str();
+        let cleaned = gdrive_core::clean_path_str(&current);
+        if cleaned != current {
+            self.set(cleaned);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Autocomplete local directory or file path based on current buffer string
     pub fn autocomplete_local_path(&mut self) -> bool {
+        self.clean_as_path();
         let current = self.as_str();
         let path = std::path::Path::new(&current);
         let (dir, prefix) = if current.ends_with('/') {
@@ -255,5 +268,19 @@ mod tests {
         assert_eq!(buf.cursor(), 9);
         buf.insert('⭐');
         assert_eq!(buf.as_str(), "Dokumen 📁⭐.md");
+    }
+
+    #[test]
+    fn test_input_buffer_clean_as_path() {
+        let mut buf = InputBuffer::new("\"/Users/rohmnsa/On My Own/LKPP.jpg\" ");
+        assert!(buf.clean_as_path());
+        assert_eq!(buf.as_str(), "/Users/rohmnsa/On My Own/LKPP.jpg");
+        assert_eq!(
+            buf.cursor(),
+            "/Users/rohmnsa/On My Own/LKPP.jpg".chars().count()
+        );
+
+        // Already clean - should return false
+        assert!(!buf.clean_as_path());
     }
 }

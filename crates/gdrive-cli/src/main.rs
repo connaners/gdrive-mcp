@@ -1119,6 +1119,7 @@ async fn handle_upload(
     docs: bool,
 ) -> Result<()> {
     let client = GDriveClient::from_saved_token().await?;
+    let path = gdrive_core::clean_local_path(&path.to_string_lossy());
     eprintln!("Mengunggah file dari {:?}...", path);
     let uploaded = client
         .upload_file_path(&path, name.as_deref(), parent.as_deref(), docs)

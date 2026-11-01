@@ -3,6 +3,7 @@ pub mod client;
 pub mod doctor;
 pub mod format;
 pub mod models;
+pub mod path;
 pub mod update;
 
 pub use auth::{AuthManager, OAuthCredentials, ProfileStatusInfo, TokenData};
@@ -12,4 +13,5 @@ pub use client::{
 pub use doctor::{run_doctor_checks, DoctorCheckItem, DoctorReport, DoctorStatus};
 pub use format::*;
 pub use models::*;
+pub use path::*;
 pub use update::*;

@@ -222,6 +222,19 @@ fn test_render_all_modals() {
     terminal.draw(|f| draw(f, &mut state)).unwrap();
     assert!(buffer_to_string(&terminal).contains("Quarterly Report Copy.pdf"));
 
+    // FileOpModal (Upload with path cleaning)
+    let mut upload_path = InputBuffer::new("\"/Users/rohmnsa/On My Own/LKPP.jpg\" ");
+    upload_path.clean_as_path();
+    state.current_view = CurrentView::FileOpModal(FileOpState::Upload {
+        local_path: upload_path,
+        dest_name: InputBuffer::default(),
+        convert_doc: false,
+        active_field: 0,
+    });
+    terminal.draw(|f| draw(f, &mut state)).unwrap();
+    assert!(buffer_to_string(&terminal).contains("/Users/rohmnsa/On My Own/LKPP.jpg"));
+    assert!(!buffer_to_string(&terminal).contains("\"/Users/rohmnsa"));
+
     // 4. PermissionsModal
     state.current_view = CurrentView::PermissionsModal(PermissionsState {
         file_id: "file_1".to_string(),
